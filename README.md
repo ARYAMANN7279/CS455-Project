@@ -94,8 +94,10 @@ _(Required by CS455 course policy — log all AI-assisted code here)_
 
 ## Team
 
-| Name | Roll No | Responsibility |
-|------|---------|---------------|
-| Aryamann Srivastava | | |
-| | | |
-| | | |
+| Name | Roll No |
+|------|---------|
+| Aryamann Srivastava | 230211 |
+| Aamir Ahmad | 230010 |
+| Pallav Rastogi | 230731 |
+| Tattwa Shivani | 231089 |
+| Sanchit Arora | 230907 |
