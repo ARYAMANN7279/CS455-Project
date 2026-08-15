@@ -1,0 +1,10 @@
+{
+  "name": "cs455-collab-platform",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter server dev\" \"pnpm --filter client dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

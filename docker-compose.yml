@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: collabcode
+      POSTGRES_USER: collabcode
+      POSTGRES_PASSWORD: collabcode
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  server:
+    build:
+      context: ./server
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgres://collabcode:collabcode@db:5432/collabcode
+      REDIS_URL: redis://redis:6379
+      PORT: 3001
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+
+  client:
+    build:
+      context: ./client
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+
+volumes:
+  pg_data:
