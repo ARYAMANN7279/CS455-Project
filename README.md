@@ -102,7 +102,6 @@ pnpm dev
 
 ## GenAI use log
 
-_(Required by CS455 course policy — log all AI-assisted code here)_
 
 | Date | File(s) | Tool | What was generated |
 |------|---------|------|-------------------|
