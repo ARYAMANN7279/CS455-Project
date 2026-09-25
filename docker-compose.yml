@@ -1,52 +1,110 @@
-version: "3.9"
-
 services:
-  db:
+  postgres:
     image: postgres:16-alpine
-    restart: unless-stopped
     environment:
-      POSTGRES_DB: collabcode
-      POSTGRES_USER: collabcode
-      POSTGRES_PASSWORD: collabcode
+      POSTGRES_USER: ${POSTGRES_USER:-concord}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concord-dev-password}
+      POSTGRES_DB: ${POSTGRES_DB:-concord}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-    volumes:
-      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-concord}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  server:
+  backend:
     build:
-      context: ./server
-    restart: unless-stopped
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: .env
     depends_on:
-      - db
-      - redis
-    environment:
-      DATABASE_URL: postgres://collabcode:collabcode@db:5432/collabcode
-      REDIS_URL: redis://redis:6379
-      PORT: 3001
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "3001:3001"
+      - "8000:8000"
     volumes:
-      - ./server:/app
-      - /app/node_modules
+      # Sandbox containers need Docker access - we mount the socket so workers
+      # can launch sibling containers (sibling is faster than Docker-in-Docker).
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount backend source for instant code reloading during development
+      - ./backend:/app
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
-  client:
+  worker:
     build:
-      context: ./client
-    restart: unless-stopped
+      context: .          # CHANGED FROM ./worker
+      dockerfile: worker/Dockerfile
+    env_file: .env
     depends_on:
-      - server
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+      # Mount backend and worker source for instant code reloading during development
+      - ./backend/app:/app/app
+      - ./worker/app:/app/worker_app
+    deploy:
+      replicas: 2
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
+    env_file: .env
+    depends_on:
+      - backend
     ports:
       - "5173:5173"
     volumes:
-      - ./client:/app
-      - /app/node_modules
+      - ./frontend/src:/app/src
+    command: npm run dev -- --host
+
+  # Sandbox image builders
+  # These services don't stay running; they just ensure the images are built on the host
+  sandbox-python:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    image: concord-sandbox:latest
+
+  sandbox-cpp:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile.cpp
+    image: concord-sandbox-cpp:latest
+
+  sandbox-nodejs:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile.nodejs
+    image: concord-sandbox-nodejs:latest
 
 volumes:
-  pg_data:
+  pgdata:
+  redisdata:

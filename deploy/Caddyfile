@@ -1,0 +1,24 @@
+# Caddy reverse proxy with automatic Let's Encrypt.
+#
+# Routes:
+#   /         -> frontend static build
+#   /api/*    -> backend (FastAPI on :8000)
+#   /ws/*     -> backend (WebSocket on :8000)
+#   /docs, /openapi.json -> backend (Swagger UI)
+#   /redoc    -> backend (ReDoc)
+
+{$CONCORD_DOMAIN:localhost} {
+    encode zstd gzip
+
+    @backend path /api/* /docs /openapi.json /redoc /healthz
+    reverse_proxy @backend backend:8000
+
+    @ws path /ws/*
+    reverse_proxy @ws backend:8000
+
+    # Frontend is served as a Vite production build in the frontend container.
+    # In dev, the frontend container runs `npm run dev` on :5173 and you hit it
+    # directly. In prod, the static build is served from a small static server.
+    root * /srv
+    file_server
+}

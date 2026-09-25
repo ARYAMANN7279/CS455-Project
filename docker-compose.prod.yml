@@ -1,0 +1,78 @@
+version: "3.9"
+
+# Production deploy used by CI/CD. Differs from dev compose in:
+#   - pulls images from ECR instead of building locally
+#   - uses real secrets from .env on the host (not committed)
+#   - serves frontend as a built artifact via a tiny static server (or caddy)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+  backend:
+    image: ${BACKEND_IMAGE}
+    restart: always
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose: ["8000"]
+
+  worker:
+    image: ${BACKEND_IMAGE}
+    restart: always
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["python", "-m", "worker_app.worker"]
+    deploy:
+      replicas: 2
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    restart: always
+    expose: ["80"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,106 @@
+"""FastAPI app entrypoint.
+
+Wires:
+  - REST routers (auth, projects, files, executions, snapshots, breakpoints, metrics)
+  - WebSocket router (collaboration gateway)
+  - CORS for the frontend dev server
+  - Background task: periodic CRDT checkpointing
+  - Startup hooks: ensure DB connectivity, create initial migration if needed
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api import auth, breakpoints, executions, files, folders, invitations, metrics, projects, snapshots, assistant
+from app.core.config import get_settings
+from app.realtime.checkpoint import checkpoint_loop
+from app.realtime.gateway import ws_router
+from app.realtime.manager import room_manager
+
+log = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    log.info("Starting %s in env=%s", settings.app_name, settings.app_env)
+
+    # Start background maintenance tasks
+    from app.core.deps import get_session
+    from app.services.reaper import ExecutionReaper
+    from app.realtime.checkpoint import checkpoint_loop
+
+    # Room cleanup (if implemented in manager)
+    if hasattr(room_manager, 'cleanup_loop'):
+        cleanup_task = asyncio.create_task(room_manager.cleanup_loop())
+    else:
+        cleanup_task = None
+
+    # CRDT persistence - using the standalone loop from b5f7bad
+    checkpoint_task = asyncio.create_task(checkpoint_loop())
+
+    reaper = ExecutionReaper()
+    reaper_task = asyncio.create_task(reaper.run_forever(session_factory=get_session))
+
+    try:
+        yield
+    finally:
+        if checkpoint_task:
+            checkpoint_task.cancel()
+        if cleanup_task:
+            cleanup_task.cancel()
+        if reaper_task:
+            reaper_task.cancel()
+        try:
+            await asyncio.gather(checkpoint_task, cleanup_task, reaper_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(
+    title="Concord",
+    description="Collaborative Code Execution Platform",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# REST
+app.include_router(auth.router)
+app.include_router(projects.router)
+app.include_router(folders.router)
+app.include_router(invitations.router)
+app.include_router(files.router)
+app.include_router(snapshots.router)
+app.include_router(executions.router)
+app.include_router(breakpoints.router)
+app.include_router(metrics.router)
+app.include_router(assistant.router)
+
+# WebSocket
+app.include_router(ws_router)
+
+
+@app.get("/test-me", tags=["meta"])
+async def test_me() -> dict:
+    return {"status": "ok", "message": "I am alive!"}
+
+@app.get("/healthz", tags=["meta"])
+async def healthz() -> dict:
+    return {"status": "ok", "service": "concord-backend"}

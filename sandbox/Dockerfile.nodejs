@@ -1,0 +1,7 @@
+# Use official Node.js alpine image for lightness
+FROM node:20-alpine
+
+# Create a non-root user for security
+RUN adduser -D runner
+USER runner
+WORKDIR /workspace
