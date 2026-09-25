@@ -1,7 +1,7 @@
-# Use official Node.js alpine image for lightness
-FROM node:20-alpine
+# node:22-slim — matches the version committed to in the D0 proposal.
+FROM node:22-slim
 
 # Create a non-root user for security
-RUN adduser -D runner
+RUN useradd --create-home --shell /bin/bash runner
 USER runner
 WORKDIR /workspace

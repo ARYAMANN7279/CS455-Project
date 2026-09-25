@@ -218,6 +218,12 @@ async def collab_socket(ws: WebSocket, project_id: int, file_id: int, token: str
                 op = msg.get("op")
                 if op == "update":
                     # Handle Base64 encoded CRDT updates
+                    # A viewer must never be able to mutate the document — the role
+                    # rank is checked here, not only at connection time, matching the
+                    # guarantee made for every REST endpoint and the debugger+ op below.
+                    if _role_rank(member.role) < 1:  # editor+ required
+                        room.connections[ws].send(json.dumps({"op": "error", "message": "editor role required to edit"}))
+                        continue
                     try:
                         b64_data = msg.get("data", "")
                         update = base64.b64decode(b64_data)

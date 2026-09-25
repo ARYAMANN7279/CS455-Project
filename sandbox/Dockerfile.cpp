@@ -1,15 +1,6 @@
-# Use a lightweight base image
-FROM ubuntu:22.04
-
-# Avoid interactive prompts during build
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install build-essential (g++, make, etc.)
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    g++ \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# gcc:13 — matches the version committed to in the D0 proposal. The official
+# image already ships g++/gcc, so no separate build-essential install is needed.
+FROM gcc:13
 
 # Create a non-root user for security
 RUN useradd -m runner

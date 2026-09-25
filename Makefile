@@ -32,7 +32,9 @@ lint:
 	docker compose exec backend bandit -r app -ll
 
 sandbox:
-	docker build -t concord-sandbox:latest ./sandbox
+	docker build -t concord-sandbox:latest -f ./sandbox/Dockerfile ./sandbox
+	docker build -t concord-sandbox-cpp:latest -f ./sandbox/Dockerfile.cpp ./sandbox
+	docker build -t concord-sandbox-nodejs:latest -f ./sandbox/Dockerfile.nodejs ./sandbox
 
 chaos:
 	docker compose exec backend python scripts/chaos.py --token $(CONCORD_TOKEN) --session-id $(SESSION_ID) --file-id $(FILE_ID)
