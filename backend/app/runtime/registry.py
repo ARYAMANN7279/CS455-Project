@@ -51,7 +51,7 @@ RUNTIMES = {
     ),
     Language.NODEJS: RuntimeConfig(
         language=Language.NODEJS,
-        image="concord-sandbox-nodejs:latest",  # Would need to be built
+        image="concord-sandbox-nodejs:latest",  # Built by `make sandbox` / docker-compose sandbox-nodejs
         entrypoint=["node", "/workspace/main.js"],
         file_extension=".js",
         debug_config={
@@ -65,7 +65,7 @@ RUNTIMES = {
     ),
     Language.CPP: RuntimeConfig(
         language=Language.CPP,
-        image="concord-sandbox-cpp:latest",  # Would need to be built with g++
+        image="concord-sandbox-cpp:latest",  # Built by `make sandbox` / docker-compose sandbox-cpp, FROM gcc:13
         entrypoint=["/workspace/main.out"],  # Compiled binary
         build_command=["g++", "-std=c++17", "-O2", "-Wall", "-o", "/workspace/main.out", "/workspace/main.cpp"],
         build_workdir="/workspace",
