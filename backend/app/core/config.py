@@ -31,6 +31,25 @@ class Settings(BaseSettings):
     sandbox_network: str = "none"
 
     worker_concurrency: int = 2
+
+    # Priority-ordered execution scheduling (FR-15 / CONCORD-36, CONCORD-37).
+    # priority(e) = priority_role_weight * roleWeight(e)
+    #             + priority_wait_weight * min(waitTime(e) / priority_wait_saturation_seconds, 1)
+    #             - priority_lang_penalty_weight * compileCost(e)
+    # roleWeight is rank/3 (viewer=0 .. owner=1) plus priority_debug_bonus for a debug run,
+    # so the worst case (a fresh debug run from an owner) is 1.5.
+    # compileCost is 1 for a language that must be compiled first (C++), else 0.
+    # priority_wait_weight is kept > 1.5 * priority_role_weight so a fully-aged
+    # run always outscores even that worst case: this is what makes "no request
+    # waits indefinitely, regardless of role" (D1 NFR-D5) actually hold, rather
+    # than just making low-role runs merely tie a fresh high-role one. Weights
+    # are otherwise tunable; see D1 ADR-007 ("the three weights require tuning").
+    priority_role_weight: float = 10.0
+    priority_wait_weight: float = 20.0
+    priority_lang_penalty_weight: float = 2.0
+    priority_wait_saturation_seconds: float = 30.0
+    priority_debug_bonus: float = 0.5
+
     enable_debugger: bool = True
     # A debug session ends after this long, or when nobody steps a paused program for idle seconds.
     sandbox_debug_timeout_seconds: int = 600

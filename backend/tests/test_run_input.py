@@ -53,12 +53,17 @@ def test_write_stdin_writes_an_empty_file_without_input(tmp_path):
 def test_queue_payload_carries_stdin(monkeypatch: pytest.MonkeyPatch):
     import app.realtime.execution_queue as q
 
-    pushed: list[bytes] = []
+    stored: dict[str, bytes] = {}
+    notified: list[bytes] = []
 
     class FakeRedis:
+        def hset(self, _name, field, value):
+            stored[field] = value
+
         def lpush(self, _name, value):
-            pushed.append(value)
+            notified.append(value)
 
     monkeypatch.setattr(q, "_redis_sync", lambda: FakeRedis())
     q.enqueue_execution_sync(1, 2, 3, "print(input())", stdin="hi\n")
-    assert json.loads(pushed[0])["stdin"] == "hi\n"
+    assert json.loads(stored["1"])["stdin"] == "hi\n"
+    assert notified == [b"1"]

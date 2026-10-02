@@ -26,7 +26,7 @@ from app.models import (
 from app.realtime.crdt import doc_from_bytes, doc_to_text
 from app.realtime.execution_queue import (
     CANCEL_CHANNEL_PREFIX,
-    QUEUE_NAME,
+    dequeue_execution,
     publish_project_event,
 )
 from app.services.sandbox import RunResult, prepare_workspace, sandbox
@@ -90,6 +90,17 @@ async def _run_one(payload: dict) -> None:
     language = payload.get("language", "python")
 
     log.info("worker=%s picked up execution=%d (debug=%s)", worker_id, execution_id, debug)
+
+    # The priority queue can let a job wait a while, during which it may have
+    # been cancelled; cancellation also removes it from the queue, but that
+    # race the other way (we pop it the same instant it's cancelled) is still
+    # possible, so check before spending a slot on a sandbox nobody wants.
+    async with AsyncSessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        if execution and execution.status == ExecutionStatus.CANCELLED:
+            log.info("execution=%d was cancelled before a worker picked it up; skipping", execution_id)
+            await _publish_status(project_id, execution_id, "cancelled")
+            return
 
     now = datetime.now(timezone.utc)
     await _transition(
@@ -383,14 +394,15 @@ async def _run_debug(
 
 async def main():
     log.info("Starting execution worker...")
-    r = aioredis_async.from_url(get_settings().redis_url, decode_responses=True)
 
     while True:
         try:
-            res = await r.brpop(QUEUE_NAME, timeout=0)
-            if res:
-                _, payload_json = res
-                payload = json.loads(payload_json)
+            # Recomputes every waiting execution's priority score and takes the
+            # highest one (FR-15); a timeout with nothing ready just loops, which
+            # also re-checks ageing-driven priority changes even with no new
+            # arrivals.
+            payload = await dequeue_execution(wait_seconds=1.0)
+            if payload:
                 await _run_one(payload)
         except Exception as e:
             log.exception("Worker loop error: %s", e)

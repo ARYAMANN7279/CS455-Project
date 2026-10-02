@@ -106,6 +106,7 @@ async def start_run(
         debug_session_info=debug_session_info,
         language=file_obj.language,
         stdin=None if debug else stdin,
+        role=member.role,
     )
     # Lets everyone's console say who started this run and on which file.
     room_manager.broadcast_to_project(project_id, json.dumps({
@@ -230,8 +231,11 @@ async def cancel_execution(
     await db.commit()
     await db.refresh(execution)
 
-    # Signal the worker via Redis so it kills the container.
-    from app.realtime.execution_queue import signal_cancel
+    # If a worker already picked this one up, signal it via Redis so it kills
+    # the container. If it's still only waiting in the queue, drop it there
+    # directly so it never costs a slot at all.
+    from app.realtime.execution_queue import remove_from_queue, signal_cancel
 
+    await remove_from_queue(execution_id)
     await signal_cancel(execution_id)
     return ExecutionOut.model_validate(execution)
