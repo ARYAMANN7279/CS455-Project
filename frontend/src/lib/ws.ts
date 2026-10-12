@@ -200,6 +200,18 @@ export function connectCollab(opts: {
     ws.send(JSON.stringify({ op: "awareness_update", data: toB64(update) }));
   };
 
+  // When a socket drops, the server tells everyone else this cursor is gone, at
+  // one clock tick past the last one it saw, and Yjs ignores anything that isn't
+  // newer. Announcing two ticks ahead on reconnect puts the cursor back at once
+  // instead of after the next move or the ~15 s renewal.
+  let everConnected = false;
+  const reannounceAwareness = () => {
+    const state = awareness.getLocalState();
+    if (!state) return sendAwareness();
+    awareness.setLocalState({ ...state });
+    awareness.setLocalState({ ...state });
+  };
+
   const connect = () => {
     synced = false;
     unacked = 0;
@@ -209,7 +221,9 @@ export function connectCollab(opts: {
     ws.addEventListener("open", () => {
       attempts = 0;
       ws.send(JSON.stringify({ op: "hello" }));
-      sendAwareness();
+      if (everConnected) reannounceAwareness();
+      else sendAwareness();
+      everConnected = true;
       pingTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: "ping" }));
       }, 10000);
