@@ -63,11 +63,11 @@ ensure_env() {
   # Replace the example placeholders once; never touch values someone set.
   # (Changing LLM_ENCRYPTION_KEY later would make saved project AI keys unreadable.)
   if grep -q '^SECRET_KEY=change-me-in-prod-32-bytes-minimum$' .env; then
-    sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(rand_hex)/" .env
+    sed "s/^SECRET_KEY=.*/SECRET_KEY=$(rand_hex)/" .env > .env.tmp && mv .env.tmp .env
     info "generated SECRET_KEY"
   fi
   if grep -q '^LLM_ENCRYPTION_KEY=change-me$' .env; then
-    sed -i "s/^LLM_ENCRYPTION_KEY=.*/LLM_ENCRYPTION_KEY=$(rand_hex)/" .env
+    sed "s/^LLM_ENCRYPTION_KEY=.*/LLM_ENCRYPTION_KEY=$(rand_hex)/" .env > .env.tmp && mv .env.tmp .env
     info "generated LLM_ENCRYPTION_KEY"
   fi
   if grep -q '^MISTRAL_API_KEY=$' .env; then
@@ -172,7 +172,9 @@ cmd_collect() {
   } > "$dir/versions.txt" 2>&1
   # Logs never contain the .env file, but double-check no API key slipped in.
   if grep -rlE 'mstrl_|sk-[A-Za-z0-9]{20,}' "$dir" >/dev/null 2>&1; then
-    sed -i -E 's/(mstrl_|sk-)[A-Za-z0-9_-]+/\1[REDACTED]/g' "$dir"/*
+    for f in "$dir"/*; do
+      sed -E 's/(mstrl_|sk-)[A-Za-z0-9_-]+/\1[REDACTED]/g' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    done
   fi
   info "logs saved to ${dir#"$ROOT"/} (share this folder with the feedback file)"
 }
