@@ -8,7 +8,9 @@ on either model — every request beyond POST /config crashed immediately.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import insert, null, select
 
+from app.models import AIAssistantRequest, AIProvider
 from tests.agent_fakes import ScriptedProvider, answer, call, set_file_text, tool_turn
 
 
@@ -104,6 +106,14 @@ async def _configure(client, project) -> dict:
     return h
 
 
+async def _stored_request(db, project_id: int) -> AIAssistantRequest:
+    db.expire_all()
+    result = await db.execute(
+        select(AIAssistantRequest).where(AIAssistantRequest.project_id == project_id)
+    )
+    return result.scalar_one()
+
+
 @pytest.mark.asyncio
 async def test_request_assistant_end_to_end(client, project, monkeypatch: pytest.MonkeyPatch):
     h = await _configure(client, project)
@@ -132,6 +142,67 @@ async def test_request_assistant_end_to_end(client, project, monkeypatch: pytest
     assert history[0]["mode"] == "ask"
     assert history[0]["prompt_tokens"] == 7
     assert history[0]["total_tokens"] == 14
+    assert history[0]["steps"] == []
+
+
+@pytest.mark.asyncio
+async def test_tool_steps_are_stored_in_order_and_returned_in_history(
+    client, db, project, monkeypatch: pytest.MonkeyPatch
+):
+    h = await _configure(client, project)
+    file_id = project["file_id"]
+    await set_file_text(db, file_id, "print('hello')\n")
+    fake = ScriptedProvider(
+        tool_turn(call("read_file", "c1", file_id=file_id)),
+        tool_turn(call("get_last_execution", "c2", file_id=file_id)),
+        answer("The file prints hello and has not been run."),
+    )
+    _use_provider(monkeypatch, fake)
+
+    response = await client.post(
+        f"/projects/{project['id']}/assist",
+        json={"prompt": "explain the file and its last run", "file_id": file_id},
+        headers=h,
+    )
+    assert response.status_code == 200, response.text
+    expected = [
+        {"tool": "read_file", "summary": f"read_file(file {file_id})", "ok": True},
+        {"tool": "get_last_execution", "summary": f"get_last_execution(file {file_id})", "ok": True},
+    ]
+    assert response.json()["steps"] == expected
+    row = await _stored_request(db, project["id"])
+    assert row.steps == expected
+    assert row.is_successful is True
+
+    history = await client.get(f"/projects/{project['id']}/assist/history", headers=h)
+    assert history.status_code == 200
+    assert len(history.json()) == 1
+    assert history.json()[0]["id"] == row.id
+    assert history.json()[0]["steps"] == expected
+
+
+@pytest.mark.asyncio
+async def test_history_returns_empty_steps_for_older_requests(client, db, project):
+    await db.execute(insert(AIAssistantRequest).values(
+        project_id=project["id"],
+        user_id=project["owner"]["id"],
+        prompt="Earlier question",
+        response="Earlier answer",
+        provider=AIProvider.MISTRAL,
+        steps=null(),
+        is_successful=True,
+    ))
+    await db.commit()
+    row = await _stored_request(db, project["id"])
+    assert row.steps is None
+    h = {"Authorization": f"Bearer {project['owner']['token']}"}
+
+    history = await client.get(f"/projects/{project['id']}/assist/history", headers=h)
+    assert history.status_code == 200
+    assert len(history.json()) == 1
+    assert history.json()[0]["steps"] == []
+    assert history.json()[0]["response"] == "Earlier answer"
+    assert (await _stored_request(db, project["id"])).steps is None
 
 
 @pytest.mark.asyncio
@@ -298,6 +369,10 @@ async def test_provider_without_tools_gets_single_completion(
     assert r.json()["proposal"] is None
     assert fake.requests[0]["tools"] is None
     assert "print('stored')" in fake.requests[0]["messages"][-1]["content"]
+    assert (await _stored_request(db, project["id"])).steps == []
+    history = await client.get(f"/projects/{project['id']}/assist/history", headers=h)
+    assert history.status_code == 200
+    assert history.json()[0]["steps"] == []
 
 
 @pytest.mark.asyncio
@@ -311,7 +386,7 @@ async def test_file_from_another_project_is_rejected(client, project, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_is_logged_and_returns_502(client, project, monkeypatch: pytest.MonkeyPatch):
+async def test_provider_failure_is_logged_and_returns_502(client, db, project, monkeypatch: pytest.MonkeyPatch):
     h = await _configure(client, project)
 
     class _Broken(ScriptedProvider):
@@ -322,10 +397,48 @@ async def test_provider_failure_is_logged_and_returns_502(client, project, monke
     r = await client.post(f"/projects/{project['id']}/assist", json={"prompt": "hi"}, headers=h)
     assert r.status_code == 502
     assert "upstream down" in r.json()["detail"]
+    row = await _stored_request(db, project["id"])
+    assert row.steps == []
+    assert row.is_successful is False
 
     r = await client.get(f"/projects/{project['id']}/assist/history", headers=h)
+    assert r.status_code == 200
     assert r.json()[0]["is_successful"] is False
     assert r.json()[0]["error_message"] == "upstream down"
+    assert r.json()[0]["steps"] == []
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_after_a_tool_retains_completed_steps(
+    client, db, project, monkeypatch: pytest.MonkeyPatch
+):
+    h = await _configure(client, project)
+    file_id = project["file_id"]
+    await set_file_text(db, file_id, "print('hello')\n")
+
+    class BrokenAfterTool(ScriptedProvider):
+        async def chat(self, *args, **kwargs):
+            if self.turns:
+                return await super().chat(*args, **kwargs)
+            raise RuntimeError("provider failed after reading")
+
+    _use_provider(monkeypatch, BrokenAfterTool(tool_turn(call("read_file", file_id=file_id))))
+    response = await client.post(
+        f"/projects/{project['id']}/assist",
+        json={"prompt": "explain this file", "file_id": file_id},
+        headers=h,
+    )
+    assert response.status_code == 502
+    expected = [{"tool": "read_file", "summary": f"read_file(file {file_id})", "ok": True}]
+    row = await _stored_request(db, project["id"])
+    assert row.steps == expected
+    assert row.is_successful is False
+    assert row.error_message == "provider failed after reading"
+
+    history = await client.get(f"/projects/{project['id']}/assist/history", headers=h)
+    assert history.status_code == 200
+    assert history.json()[0]["steps"] == expected
+    assert history.json()[0]["is_successful"] is False
 
 
 @pytest.mark.asyncio
