@@ -4,6 +4,73 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_name", "message"),
+    [
+        ("", "at least 1 character"),
+        ("/absolute", "must be relative"),
+        ("..", "must not contain '..' segments"),
+        (".", "must not contain '.' segments"),
+        ("src/lib", "must not contain slashes"),
+        ("src\\lib", "must use forward slashes"),
+        ("src\x00lib", "must not contain control characters"),
+    ],
+    ids=[
+        "empty",
+        "leading-slash",
+        "parent-segment",
+        "current-segment",
+        "slash",
+        "backslash",
+        "control-character",
+    ],
+)
+async def test_folder_name_validation_rejects_create_and_rename(
+    client, project, bad_name, message
+):
+    headers = {"Authorization": f"Bearer {project['owner']['token']}"}
+    project_id = project["id"]
+    folder_id = (
+        await client.post(
+            f"/projects/{project_id}/folders", json={"name": "valid"}, headers=headers
+        )
+    ).json()["id"]
+
+    created = await client.post(
+        f"/projects/{project_id}/folders", json={"name": bad_name}, headers=headers
+    )
+    assert created.status_code == 422
+    assert message in created.text
+
+    renamed = await client.patch(
+        f"/projects/{project_id}/folders/{folder_id}",
+        json={"name": bad_name},
+        headers=headers,
+    )
+    assert renamed.status_code == 422
+    assert message in renamed.text
+
+
+@pytest.mark.asyncio
+async def test_valid_folder_names_are_accepted_on_create_and_rename(client, project):
+    headers = {"Authorization": f"Bearer {project['owner']['token']}"}
+    project_id = project["id"]
+
+    created = await client.post(
+        f"/projects/{project_id}/folders", json={"name": "src.main"}, headers=headers
+    )
+    assert created.status_code == 201, created.text
+
+    renamed = await client.patch(
+        f"/projects/{project_id}/folders/{created.json()['id']}",
+        json={"name": "tests-unit"},
+        headers=headers,
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "tests-unit"
+
+
+@pytest.mark.asyncio
 async def test_folder_crud_round_trip(client, project):
     a = project["owner"]
     project_id = project["id"]
@@ -118,3 +185,35 @@ async def test_folder_parents_must_be_in_the_project_and_not_loop(client, projec
     r = await client.patch(f"/projects/{pid}/folders/{inner}", json={"parent_id": third}, headers=h_a)
     assert r.status_code == 200
     assert r.json()["parent_folder_id"] == third
+
+
+@pytest.mark.asyncio
+async def test_folder_move_distinguishes_omitted_parent_from_null(client, project):
+    owner, pid = project["owner"], project["id"]
+    headers = {"Authorization": f"Bearer {owner['token']}"}
+    parent = (
+        await client.post(f"/projects/{pid}/folders", json={"name": "parent"}, headers=headers)
+    ).json()["id"]
+    child = (
+        await client.post(
+            f"/projects/{pid}/folders",
+            json={"name": "child", "parent_id": parent},
+            headers=headers,
+        )
+    ).json()
+
+    renamed = await client.patch(
+        f"/projects/{pid}/folders/{child['id']}",
+        json={"name": "renamed"},
+        headers=headers,
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["parent_folder_id"] == parent
+
+    moved_to_root = await client.patch(
+        f"/projects/{pid}/folders/{child['id']}",
+        json={"parent_id": None},
+        headers=headers,
+    )
+    assert moved_to_root.status_code == 200
+    assert moved_to_root.json()["parent_folder_id"] is None

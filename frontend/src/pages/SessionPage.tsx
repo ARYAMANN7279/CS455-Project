@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, AIEvent, AIProposal, Project, Execution, FileActivity, FileChangedEvent, FileMeta, FolderMeta, getToken, getUser, JoinRequest, ProjectMember } from "../lib/api";
+import { api, AIEvent, AIProposal, Project, Execution, FileActivity, FileChangedEvent, FileMeta, FolderMeta, getToken, getUser, JoinRequest, parseMemberRef, ProjectMember } from "../lib/api";
 import { connectProject } from "../lib/ws";
 import CollabEditor from "../components/Editor";
 import FileTree from "../components/FileTree";
@@ -19,6 +19,16 @@ import EditorTabs from "../components/EditorTabs";
 import QuickOpen from "../components/QuickOpen";
 import SearchPanel, { SearchPanelHandle } from "../components/SearchPanel";
 import type { Reveal } from "../components/Editor";
+
+// Insert or replace by id. A new file or folder reaches its creator twice, from the
+// REST response and from the project socket, in either order.
+function upsertById<T extends { id: number }>(list: T[], item: T): T[] {
+  const idx = list.findIndex(x => x.id === item.id);
+  if (idx === -1) return [...list, item];
+  const next = [...list];
+  next[idx] = item;
+  return next;
+}
 
 export default function SessionPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -130,7 +140,7 @@ export default function SessionPage() {
   const onStructuralUpdate = useCallback((msg: any) => {
     const { op, file, folder, folder_id, user_id, file_id } = msg;
     if (op === "WORKSPACE_FILE_CREATED") {
-      setFiles(prev => [...prev, file]);
+      setFiles(prev => upsertById(prev, file));
       setActive(prev => prev || file);
     } else if (op === "WORKSPACE_FILE_UPDATED") {
       setFiles(prev => {
@@ -467,7 +477,8 @@ export default function SessionPage() {
   }
 
   const isOwner = !!project && project.owner_id === getUser()?.id;
-  const myRole = isOwner ? "owner" : members.find((m) => m.user.id === getUser()?.id)?.role;
+  const currentUser = getUser();
+  const myRole = isOwner ? "owner" : members.find((m) => m.user.id === currentUser?.id)?.role;
   // Viewers can ask the assistant but not apply its edits.
   const canEdit = myRole === "owner" || myRole === "editor" || myRole === "debugger";
   const canDebug = myRole === "owner" || myRole === "debugger";
@@ -559,11 +570,11 @@ export default function SessionPage() {
       // No folder selected means the project root.
       if (modal.type === "file") {
         const f = await api.createFile(project.id, modal.name, activeFolder?.id ?? null);
-        setFiles(prev => [...prev, f]);
+        setFiles(prev => upsertById(prev, f));
         openFile(f);
       } else {
         const f = await api.createFolder(project.id, modal.name, activeFolder?.id ?? null);
-        setFolders(prev => [...prev, f]);
+        setFolders(prev => upsertById(prev, f));
       }
       setModal(null);
     } catch (e) {
@@ -607,16 +618,11 @@ export default function SessionPage() {
   async function handleAddMember() {
     if (!project) return;
 
-    if (memberForm.userId === "") {
+    if (memberForm.userId.trim() === "") {
       toast("Please enter a User ID or Username.", "error");
       return;
     }
-
-    const userId = Number(memberForm.userId);
-    if (Number.isNaN(userId)) {
-      toast("Please enter a numeric User ID.", "error");
-      return;
-    }
+    const userId = parseMemberRef(memberForm.userId);
 
     try {
       await api.addProjectMember(project.id, userId, memberForm.role);
@@ -661,7 +667,27 @@ export default function SessionPage() {
       <div style={{ display: "flex", flexDirection: "column", height: "100vh", width: "100vw", overflow: "hidden", background: "var(--bg)", color: "var(--fg)", boxSizing: "border-box" }}>
         <header className="topbar" style={{ flexShrink: 0, height: 40, display: "flex", alignItems: "center", padding: "0 12px", background: "var(--panel)", borderBottom: "1px solid var(--border)" }}>
           <strong style={{ marginRight: 12 }}>Concord</strong>
-          <span style={{ opacity: 0.7, marginRight: "auto" }}>Project: {project.name}</span>
+          <span style={{ opacity: 0.7 }}>Project: {project.name} · ID #{project.id}</span>
+          <button
+            className="secondary small"
+            style={{ marginLeft: 8, marginRight: "auto" }}
+            title="Copy the project ID to share with someone who wants to request access"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(String(project.id));
+                toast(`Project ID ${project.id} copied.`, "success");
+              } catch {
+                toast(`Project ID: ${project.id}`, "info");
+              }
+            }}
+          >
+            Copy ID
+          </button>
+          {currentUser && (
+            <span className="whoami" title={currentUser.email}>
+              You: <strong>{currentUser.username}</strong>{myRole ? ` · ${myRole}` : ""} (user #{currentUser.id})
+            </span>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {members.map((m) => (
               <span key={m.user.id} className={`role-pill ${m.role}`} style={{ fontSize: 10 }} title={`${m.user.username} (${m.role}, user #${m.user.id})`}>
@@ -819,7 +845,7 @@ export default function SessionPage() {
             ) : (
               <div style={{ padding: 24, display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>
                 <div style={{ textAlign: "center", lineHeight: 1.8 }}>
-                  <div>Pick a file to get started.</div>
+                  <div>Select a file to open it.</div>
                   <div className="shortcut-hint"><kbd>Ctrl</kbd>+<kbd>P</kbd> open a file · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> search all files · <kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
                 </div>
               </div>
@@ -855,7 +881,7 @@ export default function SessionPage() {
               />
               {modal.mode === "create" && (
                 <span style={{ fontSize: 12, opacity: 0.7 }}>
-                  In: {activeFolder ? `📁 ${activeFolder.name}` : "project root"}
+                  In: {activeFolder ? activeFolder.name : "project root"}
                 </span>
               )}
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>

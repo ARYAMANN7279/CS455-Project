@@ -338,6 +338,38 @@ describe("connectCollab: sync status and reconnecting", () => {
     conn.close();
   });
 
+  it("re-announces its cursor ahead of the removal the server sends when a socket drops", async () => {
+    // The server tells everyone else a dropped cursor is gone, at one clock tick
+    // past the last it saw, and Yjs ignores anything not newer than that. So a
+    // reconnecting client has to announce itself at least two ticks ahead, or
+    // its cursor stays invisible until the next move.
+    const { Awareness, applyAwarenessUpdate } = await import("y-protocols/awareness");
+    const announcedClocks = (clientId: number) =>
+      received
+        .filter((m) => m.op === "awareness_update")
+        .map((m) => {
+          // A frame sent before the client has any state says "nobody", which has no clock.
+          const probe = new Awareness(new Y.Doc());
+          applyAwarenessUpdate(probe, b64ToBytes(m.data!), "probe");
+          return probe.meta.get(clientId)?.clock;
+        })
+        .filter((clock): clock is number => clock !== undefined);
+
+    const conn = open();
+    await conn.whenSynced;
+    conn.awareness.setLocalState({ user_id: user.id, username: user.username, color: user.color });
+    await waitFor(() => announcedClocks(conn.doc.clientID).length > 0);
+    const before = announcedClocks(conn.doc.clientID).at(-1)!;
+    const seen = announcedClocks(conn.doc.clientID).length;
+
+    sockets[0].close();
+    await waitFor(() => sockets.length === 2);
+    await waitFor(() => announcedClocks(conn.doc.clientID).length > seen);
+
+    expect(announcedClocks(conn.doc.clientID).at(-1)!).toBeGreaterThanOrEqual(before + 2);
+    conn.close();
+  });
+
   it("picks up what others wrote while it was offline", async () => {
     const conn = open();
     await conn.whenSynced;

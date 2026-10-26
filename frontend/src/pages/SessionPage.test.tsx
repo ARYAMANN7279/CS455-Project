@@ -87,6 +87,22 @@ describe("SessionPage", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows the project ID, the current user and their role, and copies the ID", async () => {
+    mockConnectProject();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<><SessionPage /><Toasts /></>, { wrapper: MemoryRouter });
+
+    expect(await screen.findByText(/Project: demo-project · ID #1/)).toBeInTheDocument();
+    const whoami = screen.getByText(/^You:/);
+    expect(whoami).toHaveTextContent("You: alice · owner (user #1)");
+    expect(whoami).toHaveAttribute("title", "a@example.com");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("1"));
+    expect(await screen.findByText("Project ID 1 copied.")).toBeInTheDocument();
+  });
+
   it("renders the project name and file tree without throwing", async () => {
     mockConnectProject();
     render(<SessionPage />, { wrapper: MemoryRouter });
@@ -116,7 +132,7 @@ describe("SessionPage", () => {
     expect(typeof (api.addProjectMember as any).mock.calls[0][1]).toBe("number");
   });
 
-  it("rejects a non-numeric User ID with a message instead of sending NaN", async () => {
+  it("sends a username as text so the server can look it up", async () => {
     mockConnectProject();
     vi.spyOn(api, "addProjectMember").mockResolvedValue({ message: "added" });
 
@@ -126,11 +142,10 @@ describe("SessionPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /members/i }));
     fireEvent.click(await screen.findByRole("button", { name: /add member/i }));
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. 123 or username/i), { target: { value: "not-a-number" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. 123 or username/i), { target: { value: " test_admin " } });
     fireEvent.click(screen.getByRole("button", { name: /^add member$/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Please enter a numeric User ID.");
-    expect(api.addProjectMember).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.addProjectMember).toHaveBeenCalledWith(1, "test_admin", "viewer"));
   });
 
   it("onStructuralUpdate: WORKSPACE_FILE_CREATED adds the new file to the tree", async () => {
@@ -279,6 +294,45 @@ describe("SessionPage", () => {
     unsubscribe();
     act(() => emit({ ...step, request_id: "r2" }));
     expect(seen).toHaveLength(1);
+  });
+
+  it("shows a new folder once when the socket event arrives before the create response", async () => {
+    const harness = mockConnectProject();
+    const folder = { id: 20, project_id: 1, parent_folder_id: null, name: "src", created_at: "now" };
+    let respond: (f: typeof folder) => void = () => {};
+    vi.spyOn(api, "createFolder").mockReturnValue(new Promise(resolve => { respond = resolve; }));
+    render(<SessionPage />, { wrapper: MemoryRouter });
+    await screen.findByRole("tab", { name: /main\.py/ });
+    await waitFor(() => expect(connectProjectMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText("+ New folder"));
+    fireEvent.change(screen.getByPlaceholderText("folder_name"), { target: { value: "src" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    act(() => harness.emit({ op: "WORKSPACE_FOLDER_CREATED", folder }));
+    await act(async () => respond(folder));
+
+    await waitFor(() => expect(screen.queryByPlaceholderText("folder_name")).not.toBeInTheDocument());
+    expect(document.querySelectorAll(".folder-name")).toHaveLength(1);
+  });
+
+  it("shows a new file once when the socket event arrives before the create response", async () => {
+    const harness = mockConnectProject();
+    const created = { ...file1, id: 11, path: "notes.py" };
+    let respond: (f: typeof created) => void = () => {};
+    vi.spyOn(api, "createFile").mockReturnValue(new Promise(resolve => { respond = resolve; }));
+    render(<SessionPage />, { wrapper: MemoryRouter });
+    await screen.findByRole("tab", { name: /main\.py/ });
+    await waitFor(() => expect(connectProjectMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText("+ New file"));
+    fireEvent.change(screen.getByPlaceholderText("file_name.py"), { target: { value: "notes.py" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    act(() => harness.emit({ op: "WORKSPACE_FILE_CREATED", file: created }));
+    await act(async () => respond(created));
+
+    await waitFor(() => expect(screen.queryByPlaceholderText("file_name.py")).not.toBeInTheDocument());
+    const nodes = [...document.querySelectorAll(".file-node")].filter(n => n.textContent?.includes("notes.py"));
+    expect(nodes).toHaveLength(1);
   });
 
   it("creates a new file in the project root when no folder is selected", async () => {

@@ -9,12 +9,15 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
-from app.models import Execution, ExecutionStatus
+from app.models import DebugSession, DebugStatus, Execution, ExecutionStatus
 from app.realtime.execution_queue import signal_cancel
+from app.services.execution_state import change_status
+from app.services.sandbox import sandbox
 
 log = logging.getLogger(__name__)
 
@@ -32,39 +35,72 @@ async def sweep_once(db: AsyncSession) -> int:
 
     Returns the number of executions marked failed.
     """
-    threshold_time = datetime.now(UTC) - ORPHAN_THRESHOLD
+    now = datetime.now(UTC)
+    threshold_time = now - ORPHAN_THRESHOLD
+    # The debugger has a longer total lifetime than a normal run. Give it
+    # that configured lifetime plus the normal recovery window for startup
+    # and teardown; stepping affects its idle timer, not this total limit.
+    debug_threshold_time = threshold_time - timedelta(seconds=get_settings().sandbox_debug_timeout_seconds)
+    active_debug = select(DebugSession.id).where(
+        DebugSession.execution_id == Execution.id,
+        DebugSession.status.in_((DebugStatus.ACTIVE, DebugStatus.PAUSED)),
+    ).exists()
 
     stmt = select(Execution).where(
         Execution.status.in_(ACTIVE_STATUSES),
         Execution.started_at < threshold_time,
+        or_(~active_debug, Execution.started_at < debug_threshold_time),
     )
     result = await db.execute(stmt)
     orphaned_executions = result.scalars().all()
 
+    changed = []
     for execution in orphaned_executions:
         log.warning(
             "Found orphaned execution %d (status: %s, started: %s), "
             "marking as failed due to worker death",
             execution.id, execution.status, execution.started_at
         )
-        execution.status = ExecutionStatus.FAILED
-        execution.finished_at = datetime.now(UTC)
-        execution.stderr = "Worker died mid-execution (orphan sweep)"
-        db.add(execution)
+        if await change_status(
+            db, execution, ExecutionStatus.FAILED, by="sweeper", finished_at=now,
+            stderr="Worker died mid-execution (orphan sweep)",
+        ):
+            changed.append(execution)
 
-    if orphaned_executions:
+    if changed:
         await db.commit()
-        log.info("Marked %d orphaned executions as failed", len(orphaned_executions))
+        log.info("Marked %d orphaned executions as failed", len(changed))
 
-    # Best effort: if the worker is alive but stuck, this makes it kill the
-    # container. A Redis outage must not undo the DB state change above.
-    for execution in orphaned_executions:
+    cleanup_ids = {execution.id for execution in changed}
+    try:
+        container_ids = await asyncio.to_thread(sandbox.execution_container_ids)
+    except Exception:
+        log.warning("Could not list execution containers; will retry next sweep", exc_info=True)
+        container_ids = set()
+    remaining = container_ids - cleanup_ids
+    if remaining:
+        # Terminal rows and surviving containers persist across backend restarts.
+        # Redis delivery and a previous Docker failure cannot lose this retry.
+        cleanup_ids.update((await db.scalars(select(Execution.id).where(
+            Execution.id.in_(remaining),
+            Execution.status.in_((ExecutionStatus.COMPLETED, ExecutionStatus.FAILED,
+                                  ExecutionStatus.TIMEOUT, ExecutionStatus.CANCELLED)),
+        ))).all())
+
+    for execution_id in sorted(cleanup_ids):
+        try:
+            await asyncio.to_thread(sandbox.kill_execution, execution_id)
+        except Exception:
+            log.warning("Could not remove orphan containers for execution %d", execution_id, exc_info=True)
+
+    # A Redis outage must not undo the DB state change or block Docker retries.
+    for execution in changed:
         try:
             await signal_cancel(execution.id)
         except Exception as e:
             log.warning("Could not signal cancel for execution %d: %s", execution.id, e)
 
-    return len(orphaned_executions)
+    return len(changed)
 
 
 async def sweep_orphans() -> None:

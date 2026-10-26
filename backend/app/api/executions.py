@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, status
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -24,13 +25,15 @@ from app.models import (
     Role,
     User,
 )
-from app.realtime.execution_queue import enqueue_execution
+from app.realtime.execution_queue import enqueue_execution, remove_from_queue
 from app.realtime.manager import room_manager
 from app.realtime.source import get_file_text
 from app.runtime.registry import PLAINTEXT
 from app.schemas import ExecutionOut, RunRequest
+from app.services.execution_state import change_status, record_status_event
 
 router = APIRouter(prefix="/projects/{project_id}/executions", tags=["executions"])
+log = logging.getLogger(__name__)
 
 FINISHED_STATUSES = {ExecutionStatus.COMPLETED, ExecutionStatus.FAILED, ExecutionStatus.TIMEOUT, ExecutionStatus.CANCELLED}
 
@@ -84,6 +87,8 @@ async def start_run(
     db.add(execution)
     await db.flush()
 
+    record_status_event(db, execution.id, None, ExecutionStatus.QUEUED, by="api")
+
     debug_session_info = None
     if debug:
         await _claim_debug_slot(db, project_id, execution, file_obj, user)
@@ -96,18 +101,30 @@ async def start_run(
     await db.commit()
     await db.refresh(execution)
 
-    await enqueue_execution(
-        execution_id=execution.id,
-        project_id=project_id,
-        file_id=file_id,
-        source_text=source_text,
-        worker_id_hint=socket.gethostname(),
-        debug=debug,
-        debug_session_info=debug_session_info,
-        language=file_obj.language,
-        stdin=None if debug else stdin,
-        role=member.role,
-    )
+    try:
+        await enqueue_execution(
+            execution_id=execution.id,
+            project_id=project_id,
+            file_id=file_id,
+            source_text=source_text,
+            worker_id_hint=socket.gethostname(),
+            debug=debug,
+            debug_session_info=debug_session_info,
+            language=file_obj.language,
+            stdin=None if debug else stdin,
+            role=member.role,
+        )
+    except (RedisError, OSError) as exc:
+        compensated = await _fail_undelivered_run(db, project_id, execution.id, debug)
+        if compensated:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Execution queue unavailable; please try again",
+            ) from exc
+        # Delivery succeeded and a worker claimed the run before the error
+        # reached us. Preserve its state rather than failing a live execution.
+        await db.refresh(execution)
+        return ExecutionOut.model_validate(execution)
     # Lets everyone's console say who started this run and on which file.
     room_manager.broadcast_to_project(project_id, json.dumps({
         "op": "EXECUTION_QUEUED",
@@ -119,6 +136,35 @@ async def start_run(
         "debug": debug,
     }))
     return ExecutionOut.model_validate(execution)
+
+
+async def _fail_undelivered_run(db: AsyncSession, project_id: int, execution_id: int, debug: bool) -> bool:
+    """Compete with the worker's queued-to-starting claim before compensating."""
+    finished_at = datetime.now(UTC)
+    execution = await db.get(Execution, execution_id, populate_existing=True)
+    if execution is None or execution.status != ExecutionStatus.QUEUED or not await change_status(
+        db, execution, ExecutionStatus.FAILED, by="api", finished_at=finished_at,
+        stderr="Execution queue delivery failed; please try again",
+    ):
+        await db.rollback()
+        return False
+    if debug:
+        await db.execute(
+            update(DebugSession).where(DebugSession.execution_id == execution_id)
+            .values(status=DebugStatus.STOPPED, ended_at=finished_at)
+        )
+    # Commit before Redis cleanup: a continuing outage must not undo recovery.
+    await db.commit()
+    try:
+        await remove_from_queue(execution_id)
+    except (RedisError, OSError):
+        log.warning("Could not remove failed execution %d from Redis", execution_id, exc_info=True)
+    if debug:
+        try:
+            await control.clear_active(project_id, execution_id)
+        except (RedisError, OSError):
+            log.warning("Could not clear failed debug execution %d from Redis", execution_id, exc_info=True)
+    return True
 
 
 def _check_can_debug(member: ProjectMember, file_obj: File) -> None:
@@ -218,16 +264,16 @@ async def cancel_execution(
     if not execution or execution.project_id != project_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution not found")
 
-    if execution.status in {
-        ExecutionStatus.COMPLETED,
-        ExecutionStatus.FAILED,
-        ExecutionStatus.TIMEOUT,
-        ExecutionStatus.CANCELLED,
-    }:
+    while execution.status not in FINISHED_STATUSES:
+        if await change_status(
+            db, execution, ExecutionStatus.CANCELLED, by="api", finished_at=datetime.now(UTC),
+        ):
+            break
+        # A worker can advance to another active state before our conditional
+        # write. Retry from the refreshed state until cancelled or finished.
+        await db.refresh(execution)
+    else:
         return ExecutionOut.model_validate(execution)
-
-    execution.status = ExecutionStatus.CANCELLED
-    execution.finished_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(execution)
 
@@ -238,4 +284,9 @@ async def cancel_execution(
 
     await remove_from_queue(execution_id)
     await signal_cancel(execution_id)
+    from app.realtime.execution_queue import publish_project_event
+
+    await publish_project_event(project_id, {
+        "type": "execution_status", "execution_id": execution_id, "status": "cancelled",
+    })
     return ExecutionOut.model_validate(execution)

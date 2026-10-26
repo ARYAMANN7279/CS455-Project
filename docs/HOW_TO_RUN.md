@@ -7,6 +7,9 @@ command and I'll explain what it does.
 
 Total time: ~15 minutes if you have nothing installed.
 
+For a public server with TLS, use [the production deployment guide](deployment.md).
+This guide uses the local development Compose stack.
+
 ## 0. What you need to install first
 
 You need three things on your computer before we start. Skip any you
@@ -67,9 +70,8 @@ git clone <repo-url> concord
 cd concord
 ```
 
-If you don't have a remote repo yet, the project files are already in
-`/Users/aamirahmad/concord/` from the build. You can skip the clone and
-just `cd` there.
+If you already have a local checkout, start from its repository root and
+skip the clone step.
 
 ## 2. Create the environment file
 
@@ -291,7 +293,7 @@ install. Restart the terminal.
 ### "port 5432 is already in use"
 You have a Postgres running locally on the same port Docker wants to use.
 Either stop your local Postgres, or change the port mapping in
-`docker-compose.yml` (change `"5432:5432"` to `"5432:5433"` etc.).
+`docker-compose.yml` (change `"5432:5432"` to `"5433:5432"` etc.).
 
 ### "permission denied while trying to connect to the Docker daemon"
 On Linux, your user isn't in the `docker` group. Run:
@@ -351,6 +353,3 @@ docker compose up -d --build
 - Read `docs/HOW_IT_WORKS.md` to understand what each piece does
 - Read `docs/api.md` to see every endpoint
 - Run the tests: `docker compose exec backend pytest`
-- Run the load test: `docker compose exec backend python scripts/load_test.py --clients 1 5 10`
-
-Have fun.

@@ -39,6 +39,7 @@ import base64
 import json
 import logging
 import time
+from time import time_ns
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -48,7 +49,8 @@ from app.core.config import get_settings
 from app.core.deps import _bearer  # noqa: F401  (token decoded in the handler)
 from app.core.security import decode_token
 from app.db.session import AsyncSessionLocal
-from app.models import File, ProjectMember
+from app.models import File, ProjectMember, User
+from app.realtime.awareness import AwarenessError, decode_update, encode_update
 from app.realtime.crdt import (
     diff_update,
     doc_to_bytes,
@@ -160,6 +162,16 @@ async def collab_socket(ws: WebSocket, project_id: int, file_id: int, token: str
             await ws.send_json({"op": "error", "message": "file not found"})
             await ws.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+        # Membership above was checked against the project in the URL, so the
+        # file has to belong to that same project, or a member of project A could
+        # open (and edit) a document of project B by guessing its file id.
+        if file.project_id != project_id:
+            await ws.send_json({"op": "error", "message": "file not found"})
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        user = await db.get(User, user_id)
+        # The name on this person's cursor comes from the account, not the client.
+        username = user.username if user else f"user-{user_id}"
 
     # The first connection loads the latest checkpoint into the room (under
     # its lock, so a simultaneous second connection waits for that instead of
@@ -176,6 +188,11 @@ async def collab_socket(ws: WebSocket, project_id: int, file_id: int, token: str
     try:
         # Send initial full state to the new client.
         room.connections[ws].send(doc_to_bytes(room.doc))
+        # ... and the cursors already in the file, so nobody has to wait for
+        # their teammates to move before seeing where they are.
+        existing = room.cursors.snapshot(exclude=ws)
+        if existing:
+            room.connections[ws].send(_awareness_frame(existing))
 
         last_activity = time.time()
         heartbeat = settings.websocket_heartbeat_interval
@@ -241,14 +258,16 @@ async def collab_socket(ws: WebSocket, project_id: int, file_id: int, token: str
                         room.connections[ws].send(json.dumps({"op": "error", "message": "invalid update format"}))
                     continue
                 elif op == "awareness_update":
-                    # Relay binary awareness update to other clients.
+                    # Cursors and names. Decoded, size-limited and stamped with
+                    # this socket's own identity before anyone else sees them.
                     try:
-                        b64_data = msg.get("data", "")
-                        # Just relay the Base64 string as-is to other clients
-                        relay_msg = json.dumps({"op": "awareness_update", "data": b64_data})
-                        room_manager.broadcast(room, relay_msg, exclude=ws)
-                    except Exception as e:
-                        log.error("Error relaying awareness: %s", e)
+                        entries = decode_update(base64.b64decode(msg.get("data", ""), validate=True))
+                    except (AwarenessError, ValueError, TypeError) as e:
+                        log.warning("Dropping bad awareness update from user %d: %s", user_id, e)
+                        continue
+                    accepted = room.cursors.accept(ws, user_id, username, entries)
+                    if accepted:
+                        room_manager.broadcast(room, _awareness_frame(accepted), exclude=ws)
                     continue
                 elif op == "sync_step1":
                     remote_sv_b64 = msg.get("sv", "")
@@ -288,6 +307,10 @@ async def collab_socket(ws: WebSocket, project_id: int, file_id: int, token: str
         log.exception("WS error")
     finally:
         room_manager.detach(room, ws)
+        gone = room.cursors.drop(ws)
+        if gone:
+            # No goodbye needed from the client: a crashed tab loses its cursor too.
+            room_manager.broadcast(room, _awareness_frame(gone))
         if not room_manager.has_user(room, user_id):
             # They closed the file (or the tab): the file tree and tabs stop
             # showing them there. ``left_file_id`` lets clients ignore this if
@@ -301,6 +324,10 @@ async def collab_socket(ws: WebSocket, project_id: int, file_id: int, token: str
         except (asyncio.CancelledError, Exception):
             log.debug("forwarder task cleanup error", exc_info=True)
         log.info("WS disconnect user=%d project=%d file=%d", user_id, project_id, file_id)
+
+
+def _awareness_frame(entries) -> str:
+    return json.dumps({"op": "awareness_update", "data": base64.b64encode(encode_update(entries)).decode()})
 
 
 def _set_awareness(room, ws, state: dict) -> None:
@@ -335,9 +362,12 @@ async def _forward_exec_events(conn: Connection, project_id: int) -> None:
         async for data in subscribe_project_events(project_id):
             try:
                 log.debug("Forwarding exec event to project %d: %s", project_id, data)
-                conn.send(
-                    json.dumps({"op": "exec_event", "event": json.loads(data)})
-                )
+                event = json.loads(data)
+                timing = event.pop("_timing", None)
+                conn.send(json.dumps({"op": "exec_event", "event": event}))
+                if timing and event.get("type") == "debug_paused":
+                    log.debug("debug_step stage=gateway_queued execution=%s trace=%s at_ns=%s",
+                              event.get("execution_id"), timing.get("id"), time_ns())
             except Exception:
                 log.exception("Error sending exec event to WS")
                 return

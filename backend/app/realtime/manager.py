@@ -27,6 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.realtime.awareness import RoomAwareness
 from app.realtime.changes import line_stats, split_stats
 from app.realtime.crdt import Doc, apply_update_counting, doc_to_text, new_doc
 
@@ -77,6 +78,8 @@ class Room:
     # Each value is whatever the client most recently sent in its ``awareness``
     # message (cursor position, user info, selection, etc.).
     awareness: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # The cursors shown in this file (what ``awareness_update`` messages carry).
+    cursors: RoomAwareness = field(default_factory=RoomAwareness)
     # Map client_id -> WebSocket so we can look up the connection that owns
     # each awareness state (needed for cleanup on disconnect and for skipping
     # the sender in broadcasts).
