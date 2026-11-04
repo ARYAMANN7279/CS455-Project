@@ -9,7 +9,7 @@ import AssistantPanel, { AskRequest, EditorSelection } from "../components/Assis
 import RecentChanges from "../components/RecentChanges";
 import SnapshotsPanel from "../components/SnapshotsPanel";
 import ConsolePanel from "../components/ConsolePanel";
-import { applyRunEvent, Run, RunEvent } from "../lib/runs";
+import { FINISHED, applyRunEvent, Run, RunEvent } from "../lib/runs";
 import { friendlyError, showError, toast } from "../lib/errors";
 import { isDebuggable, isRunnable } from "../lib/languages";
 import { applyDebugEvent, breakpointsFromEvent, DebugFrame, DebugState, emptyDebug, isDebugEvent } from "../lib/debug";
@@ -38,7 +38,9 @@ export default function SessionPage() {
   const [files, setFiles] = useState<FileMeta[]>([]);
   const [folders, setFolders] = useState<FolderMeta[]>([]);
   const [active, setActive] = useState<FileMeta | null>(null);
-  const [activeFolder, setActiveFolder] = useState<FolderMeta | null>(null);
+  // An id, not the folder: a rename or delete by anyone must show up here too.
+  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
+  const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const [presence, setPresence] = useState<Record<number, number>>({});
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
@@ -223,7 +225,7 @@ export default function SessionPage() {
     setTabIds((prev) => (prev.includes(f.id) ? prev : [...prev, f.id]));
     setRecent((prev) => [f.id, ...prev.filter((id) => id !== f.id)].slice(0, 20));
     // New files then go next to the open one.
-    setActiveFolder(folders.find((d) => d.id === f.folder_id) ?? null);
+    setActiveFolderId(f.folder_id);
     setModified((prev) => {
       if (!(f.id in prev)) return prev;
       const next = { ...prev };
@@ -298,7 +300,15 @@ export default function SessionPage() {
 
   const names: Record<number, string> = Object.fromEntries(members.map((m) => [m.user.id, m.user.username]));
   const me = getUser()?.id;
+  const busy = !!exec && !FINISHED.has(exec.status);
   const tabs = tabIds.map((id) => files.find((f) => f.id === id)).filter((f): f is FileMeta => !!f);
+
+  // Finished runs the user cleared: a late event must not bring them back.
+  const clearedRuns = useRef(new Set<number>());
+  function clearConsole() {
+    runs.filter((r) => FINISHED.has(r.status)).forEach((r) => clearedRuns.current.add(r.id));
+    setRuns((prev) => prev.filter((r) => !clearedRuns.current.has(r.id)));
+  }
 
   const onExecEvent = useCallback((event: RunEvent) => {
     if (isDebugEvent(event)) {
@@ -310,7 +320,8 @@ export default function SessionPage() {
       setDebug((prev) => applyDebugEvent(prev, event));
       if (event.type === "debug_started" || event.type === "debug_paused") setPendingFollow(event);
     }
-    setRuns((prev) => applyRunEvent(prev, event));
+    const runId = (event as { execution_id?: unknown }).execution_id;
+    if (!clearedRuns.current.has(runId as number)) setRuns((prev) => applyRunEvent(prev, event));
     if ("type" in event && event.type === "execution_status") {
       const { execution_id, status } = event as { execution_id: number; status: string };
       setExec((cur) => (cur && cur.id === execution_id ? { ...cur, status } : cur));
@@ -342,6 +353,9 @@ export default function SessionPage() {
         onFileChanged(msg as FileChangedEvent);
       } else if (msg.op === "EXECUTION_QUEUED") {
         onExecEvent(msg as RunEvent);
+      } else if (msg.op === "exec_event") {
+        // This socket, not the file's: it stays open when you switch files.
+        onExecEvent(msg.event as RunEvent);
       } else if (msg.op?.startsWith("AI_")) {
         aiListeners.current.forEach((fn) => fn(msg as AIEvent));
       }
@@ -374,6 +388,10 @@ export default function SessionPage() {
   const noteQueued = (e: Execution, file: FileMeta, withInput: boolean) =>
     onExecEvent({ type: "local_queued", execution_id: e.id, file_id: file.id, path: file.path, username: getUser()?.username ?? null, with_input: withInput });
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopPolling = () => { if (pollRef.current) clearInterval(pollRef.current); };
+  useEffect(() => stopPolling, []);
+
   async function runActive() {
     if (!active || !project) return;
     try {
@@ -382,13 +400,15 @@ export default function SessionPage() {
       noteQueued(e, active, !!stdin);
 
       // FALLBACK: Poll for status if WebSocket is slow/broken
+      stopPolling();
       const pollInterval = setInterval(async () => {
         try {
           const current = await api.getExecution(project.id, e.id);
           if (current.status !== "queued" && current.status !== "starting") {
-            setExec(current);
+            // A newer run may have started while this request was in flight.
+            setExec((cur) => (cur?.id === e.id ? current : cur));
             // If it finished, we can stop polling
-            if (["completed", "failed", "timeout", "cancelled"].includes(current.status)) {
+            if (FINISHED.has(current.status)) {
               clearInterval(pollInterval);
               // In case the live events were missed (e.g. a reconnect).
               onExecEvent({ type: "execution_output", execution_id: e.id, stdout: current.stdout, stderr: current.stderr, exit_code: current.exit_code });
@@ -399,9 +419,7 @@ export default function SessionPage() {
           console.error("Polling error:", err);
         }
       }, 2000);
-
-      // Stop polling if execution is cancelled or replaced
-      return () => clearInterval(pollInterval);
+      pollRef.current = pollInterval;
     } catch (e) {
       showError(e);
     }
@@ -728,8 +746,8 @@ export default function SessionPage() {
               activeFileId={active?.id || null}
               activeFolderId={activeFolder?.id || null}
               onSelectFile={openFile}
-              onSelectRoot={() => setActiveFolder(null)}
-              onSelectFolder={(f) => setActiveFolder(f)}
+              onSelectRoot={() => setActiveFolderId(null)}
+              onSelectFolder={(f) => setActiveFolderId(f.id)}
               onRename={(type, item) => {
                 setModal({
                   mode: "rename",
@@ -745,17 +763,17 @@ export default function SessionPage() {
             />
             {active && (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-                <button onClick={runActive} disabled={!isRunnable(active) || (!!exec && (exec.status === "queued" || exec.status === "starting" || exec.status === "running"))}
+                <button onClick={runActive} disabled={!isRunnable(active) || busy}
                   title={isRunnable(active) ? "Run this file" : "Only Python, JavaScript and C/C++ files can be run"} style={{ width: "100%", marginBottom: 4 }}>
                   Run
                 </button>
                 <button onClick={debugActive}
-                  disabled={!canDebug || !isDebuggable(active) || !!debug.active || (!!exec && (exec.status === "queued" || exec.status === "starting" || exec.status === "running"))}
+                  disabled={!canDebug || !isDebuggable(active) || !!debug.active || busy}
                   title={!canDebug ? "Debugging needs the debugger role" : !isDebuggable(active) ? "Only Python files can be debugged" : debug.active ? `${debug.active.username ?? "Someone"} is debugging ${debug.active.path}` : "Run under the debugger; it stops at your breakpoints"}
                   className="secondary" style={{ width: "100%", marginBottom: 4 }}>
                   Debug
                 </button>
-                <button onClick={cancel} disabled={!exec || ["completed", "failed", "timeout", "cancelled"].includes(exec.status)} className="secondary" style={{ width: "100%" }}>
+                <button onClick={cancel} disabled={!busy} className="secondary" style={{ width: "100%" }}>
                   Cancel
                 </button>
                 {exec && <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>status: {exec.status}</div>}
@@ -788,7 +806,6 @@ export default function SessionPage() {
                   <CollabEditor
                     project={project}
                     file={active}
-                    onExecEvent={onExecEvent}
                     onStructuralUpdate={onStructuralUpdate}
                     proposal={proposal}
                     canApply={canEdit}
@@ -799,7 +816,7 @@ export default function SessionPage() {
                     onToggleBreakpoint={canDebug ? toggleBreakpoint : undefined}
                     pausedLine={debug.paused?.file_id === active.id ? debug.paused.line : null}
                   />
-                  <div className="bottom-panel" style={{ height: 220, borderTop: "1px solid var(--border)", background: "var(--panel)", padding: 8, overflow: "hidden" }}>
+                  <div className="bottom-panel" style={{ height: 220, overflow: "hidden" }}>
                     <div className="bottom-tabs" role="tablist" aria-label="Bottom panel">
                       <button role="tab" aria-selected={bottomTab === "console"} className={bottomTab === "console" ? "on" : ""} onClick={() => setBottomTab("console")}>Console</button>
                       <button role="tab" aria-selected={bottomTab === "debug"} className={bottomTab === "debug" ? "on" : ""} onClick={() => setBottomTab("debug")}>
@@ -809,7 +826,7 @@ export default function SessionPage() {
                     {bottomTab === "console" ? (
                       <ConsolePanel
                         runs={runs}
-                        onClear={() => setRuns([])}
+                        onClear={clearConsole}
                         onAskFix={askAiToFix}
                         stdin={stdin}
                         onStdinChange={setStdin}

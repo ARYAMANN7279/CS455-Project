@@ -94,18 +94,17 @@ describe("CollabEditor", () => {
     if (vi.isMockFunction(api.saveFile)) vi.mocked(api.saveFile).mockRestore();
   });
 
-  function renderEditor(overrides: Partial<{ onExecEvent: (e: any) => void; onStructuralUpdate: (m: any) => void; canApply: boolean }> = {}) {
+  function renderEditor(overrides: Partial<{ onStructuralUpdate: (m: any) => void; canApply: boolean }> = {}) {
     const token = makeToken(1, "alice");
     setToken({ access_token: token, token_type: "bearer", user: { id: 1, username: "alice", email: "a@example.com" } });
 
-    const onExecEvent = overrides.onExecEvent ?? vi.fn();
     const onStructuralUpdate = overrides.onStructuralUpdate ?? vi.fn();
     const file = { id: 2, project_id: 1, folder_id: null, path: "main.py", language: "python", created_at: "now" };
 
     const utils = render(
-      <CollabEditor project={{ id: 1 }} file={file} onExecEvent={onExecEvent} onStructuralUpdate={onStructuralUpdate} canApply={overrides.canApply} />
+      <CollabEditor project={{ id: 1 }} file={file} onStructuralUpdate={onStructuralUpdate} canApply={overrides.canApply} />
     );
-    return { ...utils, onExecEvent, onStructuralUpdate };
+    return { ...utils, onStructuralUpdate };
   }
 
   it("renders without crashing when a valid token exists", () => {
@@ -132,15 +131,6 @@ describe("CollabEditor", () => {
     expect(destroySpy).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards exec_event WS messages to onExecEvent", async () => {
-    const { onExecEvent } = renderEditor();
-
-    await vi.waitFor(() => expect(server.clients()).toHaveLength(1));
-    server.emit("message", JSON.stringify({ op: "exec_event", event: { status: "running" } }));
-
-    await vi.waitFor(() => expect(onExecEvent).toHaveBeenCalledWith({ status: "running" }));
-  });
-
   it("forwards WORKSPACE_* WS messages to onStructuralUpdate", async () => {
     const { onStructuralUpdate } = renderEditor();
 
@@ -158,7 +148,7 @@ describe("CollabEditor", () => {
     const wsCtorSpy = vi.fn(MockWebSocket as any);
     vi.stubGlobal("WebSocket", wsCtorSpy);
 
-    render(<CollabEditor project={{ id: 1 }} file={file} onExecEvent={vi.fn()} onStructuralUpdate={vi.fn()} />);
+    render(<CollabEditor project={{ id: 1 }} file={file} onStructuralUpdate={vi.fn()} />);
 
     expect(wsCtorSpy).not.toHaveBeenCalled();
   });
@@ -177,7 +167,7 @@ describe("CollabEditor", () => {
       const token = makeToken(1, "alice");
       setToken({ access_token: token, token_type: "bearer", user: { id: 1, username: "alice", email: "a@example.com" } });
       const onProposalDone = vi.fn();
-      const base = { project: { id: 1 }, file, onExecEvent: vi.fn(), onProposalDone };
+      const base = { project: { id: 1 }, file, onProposalDone };
       const utils = render(<CollabEditor {...base} />);
       await vi.waitFor(() => expect(monacoBindingCtor).toHaveBeenCalledTimes(1));
       const ytext = monacoBindingCtor.mock.calls[0][0];
@@ -201,7 +191,7 @@ describe("CollabEditor", () => {
       const reveal = { fileId: file.id, line: 3, column: 5, length: 4, nonce: 1 };
       const utils = await renderWithText("a\nb\nc   word\n", { reveal: { ...reveal, fileId: 999, nonce: 0 } });
       expect(fakeEditorInstance.revealLineInCenter).not.toHaveBeenCalled(); // another file's result
-      utils.rerender(<CollabEditor project={{ id: 1 }} file={file} onExecEvent={vi.fn()} reveal={reveal} />);
+      utils.rerender(<CollabEditor project={{ id: 1 }} file={file} reveal={reveal} />);
       await vi.waitFor(() => expect(fakeEditorInstance.revealLineInCenter).toHaveBeenCalledWith(3));
       expect(fakeEditorInstance.setSelection).toHaveBeenCalledWith({ startLineNumber: 3, startColumn: 5, endLineNumber: 3, endColumn: 9 });
       expect(fakeEditorInstance.focus).toHaveBeenCalled();
@@ -217,13 +207,13 @@ describe("CollabEditor", () => {
       const lastDecorations = () => fakeEditorInstance.deltaDecorations.mock.calls.at(-1)![1] as { range: { startLineNumber: number }; options: { glyphMarginClassName?: string; className?: string } }[];
       expect(lastDecorations().map((d) => [d.range.startLineNumber, d.options.glyphMarginClassName])).toEqual([[2, "bp-glyph"]]);
 
-      utils.rerender(<CollabEditor project={{ id: 1 }} file={file} onExecEvent={vi.fn()} breakpoints={[2]} pausedLine={2} />);
+      utils.rerender(<CollabEditor project={{ id: 1 }} file={file} breakpoints={[2]} pausedLine={2} />);
       await vi.waitFor(() => expect(lastDecorations()).toHaveLength(2));
       expect(lastDecorations()[1].options).toMatchObject({ className: "debug-current-line", glyphMarginClassName: "bp-glyph debug-arrow" });
       expect(fakeEditorInstance.revealLineInCenterIfOutsideViewport).toHaveBeenCalledWith(2);
 
       // Without the debugger role there is no toggle.
-      utils.rerender(<CollabEditor project={{ id: 1 }} file={file} onExecEvent={vi.fn()} breakpoints={[]} />);
+      utils.rerender(<CollabEditor project={{ id: 1 }} file={file} breakpoints={[]} />);
       mouseDownListener!({ target: { type: 2, position: { lineNumber: 1 } } });
       expect(onToggleBreakpoint).toHaveBeenCalledTimes(1);
       utils.unmount();
@@ -293,7 +283,7 @@ describe("CollabEditor", () => {
     const token = makeToken(1, "alice");
     setToken({ access_token: token, token_type: "bearer", user: { id: 1, username: "alice", email: "a@example.com" } });
     const file = { id: 2, project_id: 1, folder_id: null, path: "main.py", language: "python", created_at: "now" };
-    render(<CollabEditor project={{ id: 1 }} file={file} onExecEvent={vi.fn()} onSelectionChange={onSelectionChange} />);
+    render(<CollabEditor project={{ id: 1 }} file={file} onSelectionChange={onSelectionChange} />);
 
     fakeSelection = { isEmpty: () => false, startLineNumber: 2, endLineNumber: 5, endColumn: 1 };
     selectionListener?.();

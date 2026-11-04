@@ -125,6 +125,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .file-tree li { padding: 2px 4px; cursor: pointer; border-radius: 3px; }
 .file-tree li:hover { background: rgba(255,255,255,0.05); }
 .file-tree li.active { background: rgba(88,166,255,0.2); }
+.file-node:hover, .folder-header:hover { background: rgba(255,255,255,0.05); border-radius: 3px; }
+.file-node.active { background: rgba(88,166,255,0.2); }
+.tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-toggle { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; cursor: pointer; flex-shrink: 0; }
 /* The folder new files/folders are created in (the root row included). */
 .folder-header.active { background: rgba(88,166,255,0.2); border-radius: 4px; }
 .modified-dot { color: #d29922; font-size: 10px; }
@@ -147,7 +151,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .recent-changes .removed { color: var(--bad); }
 
 .editor-host { flex: 1; min-height: 0; }
-.bottom-panel { height: 200px; border-top: 1px solid var(--border); background: var(--panel); padding: 8px; overflow-y: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+/* A column, so the console or debug panel gets what the tabs leave and its last lines aren't cut off. */
+.bottom-panel { display: flex; flex-direction: column; flex-shrink: 0; height: 200px; border-top: 1px solid var(--border); background: var(--panel); padding: 8px; overflow-y: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 
 .presence-bar { display: flex; gap: 4px; align-items: center; }
 .presence-dot { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 600; }
@@ -217,7 +222,7 @@ button.small { font-size: 11px; padding: 2px 8px; }
 .selection-chip { font-size: 11px; background: rgba(88,166,255,0.15); border: 1px solid var(--border); border-radius: 10px; padding: 1px 4px 1px 8px; align-self: flex-start; display: flex; gap: 4px; align-items: center; }
 .selection-chip button { background: none; border: none; color: var(--fg); cursor: pointer; padding: 0 4px; font-size: 11px; }
 
-.console { display: flex; flex-direction: column; height: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.console { display: flex; flex-direction: column; flex: 1; min-height: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 .console-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .console-bar strong { margin-right: auto; }
 .console-bar button.on { border-color: var(--accent); }
@@ -302,7 +307,7 @@ kbd { font-family: ui-monospace, monospace; font-size: 11px; padding: 1px 5px; b
 .bottom-tabs button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--fg); opacity: 0.7; padding: 5px 10px; border-radius: 0; cursor: pointer; font-size: 12px; }
 .bottom-tabs button.on { opacity: 1; border-bottom-color: var(--accent); }
 .bottom-tabs .dot { color: #e3b341; margin-left: 4px; }
-.debug-panel { display: flex; flex-direction: column; gap: 6px; height: 100%; min-height: 0; font-size: 12px; }
+.debug-panel { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; font-size: 12px; }
 .debug-toolbar { display: flex; flex-wrap: wrap; gap: 4px; }
 .debug-toolbar .danger:not(:disabled) { border-color: var(--bad); color: var(--bad); }
 .debug-status { opacity: 0.8; }

@@ -467,20 +467,121 @@ describe("SessionPage", () => {
       await waitFor(() => expect(run).toHaveBeenCalledWith(1, 10, "3\n4\n"));
 
       act(() => emit({ op: "EXECUTION_QUEUED", execution_id: 42, file_id: 10, path: "main.py", user_id: 1, username: "alice" }));
-      act(() => editorProps.current.onExecEvent({ type: "execution_output", execution_id: 42, stdout: "7\n", stderr: "", exit_code: 0 }));
-      act(() => editorProps.current.onExecEvent({ type: "execution_status", execution_id: 42, status: "completed" }));
+      act(() => emit({ op: "exec_event", event: { type: "execution_output", execution_id: 42, stdout: "7\n", stderr: "", exit_code: 0 } }));
+      act(() => emit({ op: "exec_event", event: { type: "execution_status", execution_id: 42, status: "completed" } }));
       const block = await screen.findByRole("region", { name: "Run 42" });
       expect(block).toHaveTextContent("main.py · run #42 by alice");
       expect(block).toHaveTextContent("with input");
       expect(block).toHaveTextContent("7");
     });
 
+    const exec = (id: number, status: string) => ({
+      id, project_id: 1, file_id: 10, status, exit_code: null, stdout: "", stderr: "",
+      queued_at: "now", started_at: null, finished_at: null, worker_id: null,
+    });
+
+    async function openConsole() {
+      const socket = mockConnectProject();
+      render(<SessionPage />, { wrapper: MemoryRouter });
+      await screen.findByText(/demo-project/);
+      await waitFor(() => expect(connectProjectMock).toHaveBeenCalled());
+      return socket;
+    }
+
+    it("shows run events from the project socket even with the file's own socket closed", async () => {
+      const { emit } = await openConsole();
+      act(() => emit({ op: "exec_event", event: { type: "execution_status", execution_id: 8, status: "running" } }));
+      expect(await screen.findByRole("region", { name: "Run 8" })).toHaveTextContent("running");
+    });
+
+    it("keeps Run and Debug disabled and Cancel enabled while a C++ file compiles", async () => {
+      vi.spyOn(api, "run").mockResolvedValue(exec(6, "queued"));
+      vi.spyOn(api, "getExecution").mockResolvedValue(exec(6, "compiling"));
+      const { emit } = await openConsole();
+      fireEvent.click(screen.getByRole("button", { name: "Run" }));
+      await screen.findByText("status: queued");
+      act(() => emit({ op: "exec_event", event: { type: "execution_status", execution_id: 6, status: "compiling" } }));
+      await screen.findByText("status: compiling");
+      expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Debug" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    describe("polling fallback", () => {
+      beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it("does not bring a cleared run back when its last poll lands", async () => {
+        vi.spyOn(api, "run").mockResolvedValue(exec(7, "queued"));
+        vi.spyOn(api, "getExecution").mockResolvedValue({ ...exec(7, "completed"), stdout: "done\n" });
+        const { emit } = await openConsole();
+        fireEvent.click(screen.getByRole("button", { name: "Run" }));
+        await screen.findByRole("region", { name: "Run 7" });
+        act(() => emit({ op: "exec_event", event: { type: "execution_status", execution_id: 7, status: "completed" } }));
+        fireEvent.click(screen.getByText("Clear"));
+        expect(screen.queryByRole("region", { name: "Run 7" })).not.toBeInTheDocument();
+        await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+        expect(screen.queryByRole("region", { name: "Run 7" })).not.toBeInTheDocument();
+      });
+
+      it("a late poll of a finished run does not replace the run now in progress", async () => {
+        vi.spyOn(api, "run").mockResolvedValueOnce(exec(1, "queued")).mockResolvedValueOnce(exec(2, "queued"));
+        vi.spyOn(api, "getExecution").mockImplementation(async (_p, id) => exec(id, id === 1 ? "completed" : "queued"));
+        const { emit } = await openConsole();
+        fireEvent.click(screen.getByRole("button", { name: "Run" }));
+        await screen.findByRole("region", { name: "Run 1" });
+        act(() => emit({ op: "exec_event", event: { type: "execution_status", execution_id: 1, status: "completed" } }));
+        fireEvent.click(screen.getByRole("button", { name: "Run" }));
+        await screen.findByRole("region", { name: "Run 2" });
+        await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+        expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+      });
+
+      it("stops polling when the page closes", async () => {
+        vi.spyOn(api, "run").mockResolvedValue(exec(3, "queued"));
+        const poll = vi.spyOn(api, "getExecution").mockResolvedValue(exec(3, "running"));
+        mockConnectProject();
+        const { unmount } = render(<SessionPage />, { wrapper: MemoryRouter });
+        await screen.findByText(/demo-project/);
+        fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+        await screen.findByRole("region", { name: "Run 3" });
+        unmount();
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(poll).not.toHaveBeenCalled();
+      });
+    });
+
+    it("Clear keeps a run that is still going, so its later events have somewhere to land", async () => {
+      const { emit } = await openConsole();
+      act(() => emit({ op: "EXECUTION_QUEUED", execution_id: 11, file_id: 10, path: "main.py", user_id: 2, username: "bob" }));
+      act(() => emit({ op: "exec_event", event: { type: "execution_status", execution_id: 11, status: "running" } }));
+      fireEvent.click(await screen.findByText("Clear"));
+      expect(screen.getByRole("region", { name: "Run 11" })).toHaveTextContent("main.py · run #11 by bob");
+    });
+
+    it("forgets the selected folder when it is deleted, and shows its new name when renamed", async () => {
+      const folder = { id: 5, project_id: 1, parent_folder_id: null, name: "src", created_at: "now" };
+      vi.spyOn(api, "listFolders").mockResolvedValue([folder]);
+      const create = vi.spyOn(api, "createFile").mockResolvedValue({ ...file1, id: 11, path: "new.py" });
+      const { emit } = await openConsole();
+      fireEvent.click(await screen.findByText("src"));
+      act(() => emit({ op: "WORKSPACE_FOLDER_UPDATED", folder: { ...folder, name: "lib" } }));
+      fireEvent.click(screen.getByText("+ New file"));
+      expect(await screen.findByText(/In: lib/)).toBeInTheDocument();
+      act(() => emit({ op: "WORKSPACE_FOLDER_DELETED", folder_id: 5 }));
+      expect(await screen.findByText(/In: project root/)).toBeInTheDocument();
+      fireEvent.change(screen.getByPlaceholderText(/name|path/i), { target: { value: "new.py" } });
+      fireEvent.click(screen.getByRole("button", { name: /create/i }));
+      await waitFor(() => expect(create).toHaveBeenCalledWith(1, "new.py", null));
+    });
+
     it("Ask AI to fix sends a fix request to the assistant", async () => {
-      mockConnectProject();
+      const { emit } = mockConnectProject();
       render(<SessionPage />, { wrapper: MemoryRouter });
       await screen.findByTestId("fake-assistant-panel");
-      act(() => editorProps.current.onExecEvent({ type: "execution_output", execution_id: 5, stdout: "", stderr: "boom", exit_code: 1 }));
-      act(() => editorProps.current.onExecEvent({ type: "execution_status", execution_id: 5, status: "failed" }));
+      act(() => emit({ op: "exec_event", event: { type: "execution_output", execution_id: 5, stdout: "", stderr: "boom", exit_code: 1 } }));
+      act(() => emit({ op: "exec_event", event: { type: "execution_status", execution_id: 5, status: "failed" } }));
       fireEvent.click(await screen.findByText("Ask AI to fix"));
       await waitFor(() => expect(panelProps.current.askRequest).toMatchObject({ mode: "fix" }));
       expect(panelProps.current.askRequest?.prompt).toContain("(exit code 1)");
@@ -594,10 +695,12 @@ describe("SessionPage", () => {
         vi.spyOn(api, "getProject").mockResolvedValue({ ...project, owner_id: 99 });
         vi.spyOn(api, "listProjectMembers").mockResolvedValue([{ user: someToken.user, role: "viewer" }]);
       }
-      mockConnectProject();
+      const socket = mockConnectProject();
       render(<SessionPage />, { wrapper: MemoryRouter });
       await screen.findByRole("tab", { name: /main\.py/ });
       await waitFor(() => expect(editorProps.current).toBeTruthy());
+      await waitFor(() => expect(connectProjectMock).toHaveBeenCalled());
+      return socket;
     }
 
     it("breakpoints load per file and toggle from the editor margin", async () => {
@@ -606,7 +709,7 @@ describe("SessionPage", () => {
         { id: 2, file_id: 10, line: 4, enabled: false, created_by: 1, created_at: "now" },
       ]);
       const put = vi.spyOn(api, "setBreakpoints").mockResolvedValue([]);
-      await renderAs("owner");
+      const { emit } = await renderAs("owner");
       await waitFor(() => expect(editorProps.current.breakpoints).toEqual([3]));
       act(() => { void editorProps.current.onToggleBreakpoint!(1); });
       expect(editorProps.current.breakpoints).toEqual([1, 3]); // shown right away
@@ -617,20 +720,20 @@ describe("SessionPage", () => {
       await waitFor(() => expect(editorProps.current.breakpoints).toEqual([1, 3])); // put back
 
       // Someone else's change arrives as an event.
-      act(() => editorProps.current.onExecEvent({ type: "breakpoints_updated", lines_by_file: { "10": [7] } }));
+      act(() => emit({ op: "exec_event", event: { type: "breakpoints_updated", lines_by_file: { "10": [7] } } }));
       expect(editorProps.current.breakpoints).toEqual([7]);
     });
 
     it("Debug starts a session; pauses show in the panel and follow the program to its file", async () => {
       const start = vi.spyOn(api, "debug").mockResolvedValue({ id: 50, project_id: 1, file_id: 10, status: "queued", exit_code: null, stdout: "", stderr: "", queued_at: "now", started_at: null, finished_at: null, worker_id: null });
       const command = vi.spyOn(api, "debugCommand").mockResolvedValue({ delivered: true });
-      await renderAs("owner");
+      const { emit } = await renderAs("owner");
       fireEvent.click(screen.getByRole("button", { name: /^debug$/i }));
       await waitFor(() => expect(start).toHaveBeenCalledWith(1, 10));
       expect(screen.getByRole("tab", { name: /debug/i })).toHaveAttribute("aria-selected", "true");
 
-      act(() => editorProps.current.onExecEvent({ type: "debug_started", execution_id: 50, file_id: 10, path: "main.py", username: "alice" }));
-      act(() => editorProps.current.onExecEvent(pausedEvent));
+      act(() => emit({ op: "exec_event", event: { type: "debug_started", execution_id: 50, file_id: 10, path: "main.py", username: "alice" } }));
+      act(() => emit({ op: "exec_event", event: pausedEvent }));
       await waitFor(() => expect(editorProps.current.file.id).toBe(11)); // followed into helper.py
       expect(editorProps.current.pausedLine).toBe(2);
       expect(screen.getByText(/Paused at helper\.py:2/)).toBeInTheDocument();
@@ -644,7 +747,7 @@ describe("SessionPage", () => {
       await waitFor(() => expect(editorProps.current.file.id).toBe(10));
       expect(screen.getByRole("button", { name: /^debug$/i })).toBeDisabled(); // one session at a time
 
-      act(() => editorProps.current.onExecEvent({ type: "debug_stopped", execution_id: 50, reason: "exited", exit_code: 0 }));
+      act(() => emit({ op: "exec_event", event: { type: "debug_stopped", execution_id: 50, reason: "exited", exit_code: 0 } }));
       expect(screen.getByText("The program finished (exit code 0).")).toBeInTheDocument();
     });
 

@@ -31,7 +31,6 @@ export type Reveal = { fileId: number; line: number; column: number; length: num
 type EditorProps = {
   project: any;
   file: FileMeta;
-  onExecEvent: (event: any) => void;
   onStructuralUpdate?: (msg: any) => void;
   /** An AI edit proposal to review; shown only if it targets this file. */
   proposal?: AIProposal | null;
@@ -55,7 +54,7 @@ type EditorProps = {
 const GUTTER_GLYPH_MARGIN = 2;
 
 export default function CollabEditor({
-  project, file, onExecEvent, onStructuralUpdate,
+  project, file, onStructuralUpdate,
   proposal: incomingProposal = null, canApply = true, onProposalDone, onSelectionChange, reveal = null,
   breakpoints = [], onToggleBreakpoint, pausedLine = null,
 }: EditorProps) {
@@ -67,7 +66,6 @@ export default function CollabEditor({
   const editorRef = useRef<any>(null);
   const connRef = useRef<CollabConnection | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
-  const onExecEventRef = useRef(onExecEvent);
   const onStructuralUpdateRef = useRef(onStructuralUpdate);
   const [presence, setPresence] = useState<{ user_id: number; username: string; color: string }[]>([]);
   const [status, setStatus] = useState<SyncStatus>("connecting");
@@ -84,10 +82,6 @@ export default function CollabEditor({
   const closeProposal = () => onProposalDone?.();
 
   // Keep the event ref up to date so the WS listener always uses the latest callback
-  useEffect(() => {
-    onExecEventRef.current = onExecEvent;
-  }, [onExecEvent]);
-
   useEffect(() => {
     onStructuralUpdateRef.current = onStructuralUpdate;
   }, [onStructuralUpdate]);
@@ -139,9 +133,7 @@ export default function CollabEditor({
     });
 
     const offMessage = conn.onMessage((msg) => {
-      if (msg.op === "exec_event") {
-        onExecEventRef.current(msg.event);
-      } else if (msg.op === "project_presence" || msg.op?.startsWith("WORKSPACE_")) {
+      if (msg.op === "project_presence" || msg.op?.startsWith("WORKSPACE_")) {
         onStructuralUpdateRef.current?.(msg);
       }
     });
