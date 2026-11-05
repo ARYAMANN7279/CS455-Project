@@ -324,7 +324,8 @@ export default function CollabEditor({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    // minHeight: Monaco's pixel height would otherwise stop this shrinking when the console grows.
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {proposal && (
         <div style={{
           position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
@@ -414,6 +415,8 @@ export default function CollabEditor({
           onMount={handleMount}
           options={{
             fontSize: 13,
+            // Follow the panels around it when they are dragged to a new size.
+            automaticLayout: true,
             minimap: { enabled: false },
             glyphMargin: true,
             // Room above line 1 for other people's name tags.

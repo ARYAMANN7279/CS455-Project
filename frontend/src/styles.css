@@ -151,6 +151,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .recent-changes .removed { color: var(--bad); }
 
 .editor-host { flex: 1; min-height: 0; }
+
+/* Draggable dividers between the workspace panels. */
+.resize-handle { flex: 0 0 5px; background: transparent; touch-action: none; user-select: none; transition: background 0.1s; }
+.resize-handle.x { cursor: col-resize; }
+.resize-handle.y { cursor: row-resize; }
+.resize-handle:hover, .resize-handle:active, .resize-handle:focus-visible { background: var(--accent); outline: none; }
 /* A column, so the console or debug panel gets what the tabs leave and its last lines aren't cut off. */
 .bottom-panel { display: flex; flex-direction: column; flex-shrink: 0; height: 200px; border-top: 1px solid var(--border); background: var(--panel); padding: 8px; overflow-y: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 

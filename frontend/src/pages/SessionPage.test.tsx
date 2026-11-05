@@ -576,6 +576,56 @@ describe("SessionPage", () => {
       await waitFor(() => expect(create).toHaveBeenCalledWith(1, "new.py", null));
     });
 
+    describe("resizing panels", () => {
+      const panel = (name: string) => screen.getByRole("separator", { name });
+
+      it("the console, sidebar and assistant panel resize, and the sizes are remembered", async () => {
+        await openConsole();
+        const console_ = document.querySelector<HTMLElement>(".bottom-panel")!;
+        const sidebar = document.querySelector<HTMLElement>(".sidebar")!;
+        const assistant = screen.getByTestId("fake-assistant-panel").parentElement!;
+        expect([console_.style.height, sidebar.style.width, assistant.style.width]).toEqual(["220px", "240px", "300px"]);
+
+        fireEvent.keyDown(panel("Resize the console"), { key: "ArrowUp" });
+        fireEvent.keyDown(panel("Resize the sidebar"), { key: "ArrowRight" });
+        fireEvent.keyDown(panel("Resize the assistant panel"), { key: "ArrowLeft" });
+        expect([console_.style.height, sidebar.style.width, assistant.style.width]).toEqual(["236px", "256px", "316px"]);
+        expect(JSON.parse(localStorage.getItem("concord:layout")!)).toEqual({ left: 256, right: 316, bottom: 236 });
+      });
+
+      it("starts from the sizes saved last time", async () => {
+        localStorage.setItem("concord:layout", JSON.stringify({ left: 300, right: 260, bottom: 180 }));
+        await openConsole();
+        expect(document.querySelector<HTMLElement>(".sidebar")!.style.width).toBe("300px");
+        expect(document.querySelector<HTMLElement>(".bottom-panel")!.style.height).toBe("180px");
+      });
+    });
+
+    describe("who can add the assistant's API key", () => {
+      const user = someToken.user;
+
+      it("the creator can", async () => {
+        await openConsole();
+        await waitFor(() => expect(panelProps.current.isOwner).toBe(true));
+      });
+
+      it("another member with the owner role can", async () => {
+        vi.spyOn(api, "getProject").mockResolvedValue({ ...project, owner_id: 99 });
+        vi.spyOn(api, "listProjectMembers").mockResolvedValue([{ user, role: "owner" }]);
+        await openConsole();
+        await waitFor(() => expect(panelProps.current.isOwner).toBe(true));
+        expect(screen.queryByRole("button", { name: /^Members/ })).not.toBeInTheDocument();
+      });
+
+      it("an editor cannot", async () => {
+        vi.spyOn(api, "getProject").mockResolvedValue({ ...project, owner_id: 99 });
+        vi.spyOn(api, "listProjectMembers").mockResolvedValue([{ user, role: "editor" }]);
+        await openConsole();
+        await screen.findAllByText(/· editor/);
+        expect(panelProps.current.isOwner).toBe(false);
+      });
+    });
+
     it("Ask AI to fix sends a fix request to the assistant", async () => {
       const { emit } = mockConnectProject();
       render(<SessionPage />, { wrapper: MemoryRouter });

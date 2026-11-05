@@ -182,6 +182,7 @@ export default function DashboardPage() {
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: "auto" }}>
                       <button onClick={() => openSession(p)}>Open Workspace</button>
+                      {p.owner_id === me?.id && (
                       <div style={{ display: "grid", gap: 4, padding: "8px", background: "var(--bg-alt)", borderRadius: "4px", fontSize: "12px" }}>
                         <strong>Add Member:</strong>
                         <div style={{ display: "flex", gap: 4 }}>
@@ -202,6 +203,7 @@ export default function DashboardPage() {
                           <button onClick={() => addMember(p.id)} disabled={loading || !memberId.trim()}>Add</button>
                         </div>
                       </div>
+                      )}
                     </div>
                   </div>
                 ))}

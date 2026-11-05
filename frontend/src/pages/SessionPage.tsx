@@ -9,7 +9,9 @@ import AssistantPanel, { AskRequest, EditorSelection } from "../components/Assis
 import RecentChanges from "../components/RecentChanges";
 import SnapshotsPanel from "../components/SnapshotsPanel";
 import ConsolePanel from "../components/ConsolePanel";
+import ResizeHandle from "../components/ResizeHandle";
 import { FINISHED, applyRunEvent, Run, RunEvent } from "../lib/runs";
+import { loadSizes, maxSize, MIN_SIZES, PanelSizes, saveSizes } from "../lib/layout";
 import { friendlyError, showError, toast } from "../lib/errors";
 import { isDebuggable, isRunnable } from "../lib/languages";
 import { applyDebugEvent, breakpointsFromEvent, DebugFrame, DebugState, emptyDebug, isDebugEvent } from "../lib/debug";
@@ -63,6 +65,21 @@ export default function SessionPage() {
   const [recent, setRecent] = useState<number[]>([]);
   const tabsRestored = useRef(false);
   const [sidebarView, setSidebarView] = useState<"files" | "search">("files");
+  const [sizes, setSizes] = useState<PanelSizes>(loadSizes);
+  useEffect(() => saveSizes(sizes), [sizes]);
+  // A size saved on a bigger window must not squeeze the editor out on this one.
+  const panelSize = (panel: keyof PanelSizes) => Math.min(sizes[panel], maxSize(panel));
+  const resizeHandle = (panel: keyof PanelSizes, label: string, axis: "x" | "y", invert = false) => (
+    <ResizeHandle
+      label={label}
+      axis={axis}
+      invert={invert}
+      size={panelSize(panel)}
+      min={MIN_SIZES[panel]}
+      max={maxSize(panel)}
+      onResize={(size) => setSizes((prev) => ({ ...prev, [panel]: size }))}
+    />
+  );
   const [quickOpen, setQuickOpen] = useState(false);
   // Where to scroll the editor to (from a search result), once that file is open.
   const [reveal, setReveal] = useState<Reveal | null>(null);
@@ -728,7 +745,7 @@ export default function SessionPage() {
           </div>
         </header>
         <div style={{ display: "flex", flexGrow: 1, overflow: "hidden" }}>
-          <aside className="sidebar" style={{ width: 240, background: "var(--panel)", borderRight: "1px solid var(--border)", padding: 8, overflowY: "auto", zIndex: 10 }}>
+          <aside className="sidebar" style={{ width: panelSize("left"), background: "var(--panel)", borderRight: "1px solid var(--border)", padding: 8, overflowY: "auto", zIndex: 10 }}>
             <div className="sidebar-switch" role="tablist" aria-label="Sidebar">
               <button role="tab" aria-selected={sidebarView === "files"} className={sidebarView === "files" ? "on" : ""} onClick={() => setSidebarView("files")}>Files</button>
               <button role="tab" aria-selected={sidebarView === "search"} className={sidebarView === "search" ? "on" : ""} onClick={() => setSidebarView("search")} title="Search all files (Ctrl+Shift+F)">Search</button>
@@ -789,6 +806,7 @@ export default function SessionPage() {
             <SnapshotsPanel projectId={project.id} canEdit={canEdit} />
             </>)}
           </aside>
+          {resizeHandle("left", "Resize the sidebar", "x")}
           <main className="main" style={{ flexGrow: 1, position: "relative", overflow: "hidden" }}>
             {active ? (
               <div style={{ display: "flex", flexDirection: "row", height: "100%" }}>
@@ -816,7 +834,8 @@ export default function SessionPage() {
                     onToggleBreakpoint={canDebug ? toggleBreakpoint : undefined}
                     pausedLine={debug.paused?.file_id === active.id ? debug.paused.line : null}
                   />
-                  <div className="bottom-panel" style={{ height: 220, overflow: "hidden" }}>
+                  {resizeHandle("bottom", "Resize the console", "y", true)}
+                  <div className="bottom-panel" style={{ height: panelSize("bottom"), overflow: "hidden" }}>
                     <div className="bottom-tabs" role="tablist" aria-label="Bottom panel">
                       <button role="tab" aria-selected={bottomTab === "console"} className={bottomTab === "console" ? "on" : ""} onClick={() => setBottomTab("console")}>Console</button>
                       <button role="tab" aria-selected={bottomTab === "debug"} className={bottomTab === "debug" ? "on" : ""} onClick={() => setBottomTab("debug")}>
@@ -844,12 +863,13 @@ export default function SessionPage() {
                     )}
                   </div>
                 </div>
-                <aside style={{ width: 300, background: "var(--panel)", borderLeft: "1px solid var(--border)", overflow: "hidden" }}>
+                {resizeHandle("right", "Resize the assistant panel", "x", true)}
+                <aside style={{ width: panelSize("right"), flexShrink: 0, background: "var(--panel)", borderLeft: "1px solid var(--border)", overflow: "hidden" }}>
                   <AssistantPanel
                     projectId={project.id}
                     activeFile={active}
                     files={files}
-                    isOwner={isOwner}
+                    isOwner={myRole === "owner"}
                     onProposal={setProposal}
                     currentUserId={getUser()?.id ?? null}
                     subscribeAi={subscribeAi}
