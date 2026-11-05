@@ -1,7 +1,7 @@
 """The editor's sidebar and console in a real browser: what jsdom cannot lay out or reconnect."""
 from __future__ import annotations
 
-from conftest import open_file, set_text
+from conftest import APP, open_file, set_text
 from playwright.sync_api import Locator, Page, expect
 
 LONG_OUTPUT = "for i in range(80):\n    print('line', i)\n"
@@ -67,3 +67,68 @@ def test_selecting_a_folder_keeps_it_open_and_long_names_fit(open_as, api):
 
     alice.get_by_role("button", name="Collapse e2e_folder").click()
     expect(node).to_be_hidden()
+
+
+def drag(page: Page, handle: str, dx: float, dy: float) -> None:
+    box = page.get_by_role("separator", name=handle).bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + dx, y + dy, steps=5)
+    page.mouse.up()
+
+
+def size_of(page: Page, selector: str) -> dict:
+    return page.locator(selector).first.bounding_box()
+
+
+def test_the_console_and_both_sidebars_can_be_dragged_and_the_editor_follows(open_as, api):
+    api.file("e2e_resize.py")
+    alice = open_as("alice")
+    open_file(alice, "e2e_resize.py")
+    assistant = "aside:not(.sidebar)"
+    editor = size_of(alice, ".monaco-editor")
+    panel, left, right = size_of(alice, ".bottom-panel"), size_of(alice, ".sidebar"), size_of(alice, assistant)
+
+    drag(alice, "Resize the console", 0, -120)
+    drag(alice, "Resize the sidebar", 80, 0)
+    drag(alice, "Resize the assistant panel", -60, 0)
+
+    assert size_of(alice, ".bottom-panel")["height"] == panel["height"] + 120
+    assert bottom_of(alice, ".bottom-panel") <= alice.viewport_size["height"]  # grew up, not off screen
+    assert size_of(alice, ".sidebar")["width"] == left["width"] + 80
+    assert size_of(alice, assistant)["width"] == right["width"] + 60
+    resized = size_of(alice, ".monaco-editor")  # Monaco lays itself out again
+    assert resized["height"] == editor["height"] - 120
+    assert resized["width"] == editor["width"] - 140
+
+    alice.reload()
+    alice.wait_for_selector(".monaco-editor", timeout=90_000)
+    assert size_of(alice, ".sidebar")["width"] == left["width"] + 80
+
+
+def test_only_the_creator_sees_add_member_on_the_dashboard(open_as):
+    alice, bob = open_as("alice"), open_as("bob")
+    for page in (alice, bob):
+        page.goto(f"{APP}/")
+    expect(alice.get_by_text("Add Member:").first).to_be_visible()
+    expect(bob.locator(".project-card").first).to_be_visible()
+    expect(bob.get_by_text("Add Member:")).to_have_count(0)
+
+
+def test_a_member_with_the_owner_role_can_add_the_api_key(open_as, api):
+    projects = api.call("GET", "/projects")
+    pid = next((p["id"] for p in projects if p["name"] == "e2e co-owner"), None) \
+        or api.call("POST", "/projects", body={"name": "e2e co-owner"})["id"]
+    if not api.call("GET", f"/projects/{pid}/files"):
+        api.call("POST", f"/projects/{pid}/files", body={"path": "e2e_co_owner.py"})
+        api.call("POST", f"/projects/{pid}/members", body={"user_id": "bob", "role": "owner"})
+        api.call("POST", f"/projects/{pid}/members", body={"user_id": "carol", "role": "editor"})
+
+    bob, carol = open_as("bob"), open_as("carol")
+    for page in (bob, carol):
+        page.goto(f"{APP}/projects/{pid}")
+        page.wait_for_selector(".monaco-editor", timeout=90_000)
+    expect(bob.get_by_label("Mistral API key")).to_be_visible()
+    expect(carol.get_by_text("Ask the project owner to add an API key.")).to_be_visible()
+    expect(carol.get_by_label("Mistral API key")).to_have_count(0)
