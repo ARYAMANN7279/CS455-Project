@@ -16,10 +16,16 @@ const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digi
 /** The console: one block per run with its status, output and exit code. */
 export default function ConsolePanel({ runs, onClear, onAskFix, stdin, onStdinChange, showInput, onToggleInput }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
+  // Follow new output, unless the user has scrolled up to read something.
+  const following = useRef(true);
   useEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [runs]);
+    if (el && following.current) el.scrollTop = el.scrollHeight;
+  }, [runs, showInput]);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (el) following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
 
   return (
     <div className="console">
@@ -40,7 +46,7 @@ export default function ConsolePanel({ runs, onClear, onAskFix, stdin, onStdinCh
           onChange={(e) => onStdinChange(e.target.value)}
         />
       )}
-      <div className="console-runs" ref={scroller}>
+      <div className="console-runs" ref={scroller} onScroll={onScroll}>
         {runs.length === 0 && <div style={{ opacity: 0.5 }}>Press Run to see the output here.</div>}
         {runs.map((r) => (
           <section key={r.id} className={`run ${r.status}`} aria-label={`Run ${r.id}`}>
@@ -54,8 +60,7 @@ export default function ConsolePanel({ runs, onClear, onAskFix, stdin, onStdinCh
             {r.notes.map((n, i) => <pre key={i} className="run-note">{n}</pre>)}
             {FINISHED.has(r.status) && (
               <div className="run-foot">
-                {r.exitCode != null && <>exit code {r.exitCode}</>}
-                {r.duration != null && <> · {r.duration.toFixed(2)} s</>}
+                {[r.exitCode != null && `exit code ${r.exitCode}`, r.duration != null && `${r.duration.toFixed(2)} s`].filter(Boolean).join(" · ")}
                 {isFailed(r) && onAskFix && (
                   <button className="small" onClick={() => onAskFix(r)} style={{ marginLeft: 8 }}>Ask AI to fix</button>
                 )}

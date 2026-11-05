@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import DashboardPage from "./DashboardPage";
 import { api, setToken } from "../lib/api";
@@ -149,6 +149,20 @@ describe("DashboardPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
 
     await waitFor(() => expect(api.addProjectMember).toHaveBeenCalledWith(1, "bob", "VIEWER"));
+  });
+
+  it("offers Add Member and its role dropdown only on projects you created", async () => {
+    setToken(someToken);
+    vi.spyOn(api, "listProjects").mockResolvedValue([
+      { id: 1, owner_id: 1, name: "mine", created_at: "now" },
+      { id: 2, owner_id: 99, name: "theirs", created_at: "now" },
+    ]);
+    render(<DashboardPage />, { wrapper: MemoryRouter });
+    const card = (name: string) => screen.getByText(name).closest(".project-card") as HTMLElement;
+    await screen.findByText("theirs");
+    expect(within(card("mine")).getByRole("combobox")).toBeInTheDocument();
+    expect(within(card("theirs")).queryByRole("combobox")).not.toBeInTheDocument();
+    expect(within(card("theirs")).queryByText("Add Member:")).not.toBeInTheDocument();
   });
 
   it("shows who is signed in", async () => {

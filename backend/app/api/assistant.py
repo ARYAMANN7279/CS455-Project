@@ -21,7 +21,15 @@ from app.core.config import get_settings
 from app.core.deps import CurrentUser, DbSession, get_member
 from app.llm import service as ai_service
 from app.llm.manager import llm_manager
-from app.models import AIAssistantConfig, AIAssistantRequest, AIProvider, File, Project
+from app.models import (
+    AIAssistantConfig,
+    AIAssistantRequest,
+    AIProvider,
+    File,
+    Project,
+    ProjectMember,
+    Role,
+)
 from app.realtime.manager import room_manager
 from app.realtime.source import get_file_text
 from app.schemas.assistant import (
@@ -58,6 +66,15 @@ async def _get_project_config(
     return config
 
 
+def _require_owner(project: Project, member: ProjectMember) -> None:
+    """Anyone with the Owner role may configure the assistant, not just the creator."""
+    if project.owner_id != member.user_id and member.role != Role.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only project owner can configure AI assistant",
+        )
+
+
 @router.post("/config", response_model=AIAssistantConfigOut)
 async def configure_assistant(
     project_id: int,
@@ -72,17 +89,13 @@ async def configure_assistant(
             detail="AI Assistant is currently disabled",
         )
 
-    await get_member(db, project_id, user.id)
+    member = await get_member(db, project_id, user.id)
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
-    if project.owner_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only project owner can configure AI assistant",
-        )
+    _require_owner(project, member)
 
     if not llm_manager.validate_provider_config(payload.provider.value, payload.api_key):
         raise HTTPException(
@@ -146,17 +159,13 @@ async def update_assistant_config(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI Assistant is currently disabled",
         )
-    await get_member(db, project_id, user.id)
+    member = await get_member(db, project_id, user.id)
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
-    if project.owner_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only project owner can configure AI assistant",
-        )
+    _require_owner(project, member)
 
     config = await _get_project_config(project_id, db)
 

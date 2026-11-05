@@ -93,6 +93,43 @@ describe("ConsolePanel", () => {
     expect(onStdinChange).toHaveBeenCalledWith("5\n");
   });
 
+  it("leaves no stray separator when a run has a duration but no exit code", () => {
+    const [run] = fold([{ type: "execution_status", execution_id: 2, status: "cancelled" }]);
+    render(<ConsolePanel {...props} runs={[{ ...run, duration: 1.5 }]} />);
+    expect(screen.getByRole("region", { name: "Run 2" }).querySelector(".run-foot")).toHaveTextContent(/^1\.50 s$/);
+  });
+
+  describe("scrolling", () => {
+    function measure(el: HTMLElement, scrollHeight: number, clientHeight: number) {
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: scrollHeight });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: clientHeight });
+    }
+    const more = fold([{ type: "execution_status", execution_id: 10, status: "running" }]);
+
+    it("follows new output while you are at the bottom", () => {
+      const { container, rerender } = render(<ConsolePanel {...props} />);
+      const el = container.querySelector<HTMLElement>(".console-runs")!;
+      measure(el, 900, 100);
+      rerender(<ConsolePanel {...props} runs={[...failed, ...more]} />);
+      expect(el.scrollTop).toBe(900);
+    });
+
+    it("stays put if you scrolled up to read, until you scroll back down", () => {
+      const { container, rerender } = render(<ConsolePanel {...props} />);
+      const el = container.querySelector<HTMLElement>(".console-runs")!;
+      measure(el, 900, 100);
+      el.scrollTop = 200;
+      fireEvent.scroll(el);
+      rerender(<ConsolePanel {...props} runs={[...failed, ...more]} />);
+      expect(el.scrollTop).toBe(200);
+
+      el.scrollTop = 800;
+      fireEvent.scroll(el);
+      rerender(<ConsolePanel {...props} runs={[...more]} />);
+      expect(el.scrollTop).toBe(900);
+    });
+  });
+
   it("says how to start when empty", () => {
     render(<ConsolePanel {...props} runs={[]} />);
     expect(screen.getByText("Press Run to see the output here.")).toBeInTheDocument();

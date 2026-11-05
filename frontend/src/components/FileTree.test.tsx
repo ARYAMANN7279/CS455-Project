@@ -163,6 +163,54 @@ describe("FileTree", () => {
     expect(onSelectFolder).toHaveBeenCalledWith(fo);
   });
 
+  describe("folders", () => {
+    const folder = { id: 1, project_id: 1, parent_folder_id: null, name: "src", created_at: "now" };
+    const inside = { id: 2, project_id: 1, folder_id: 1, path: "src/a.py", language: "python", created_at: "now" };
+    const renderTree = (onSelectFolder = vi.fn(), onRename = vi.fn()) => render(
+      <FileTree files={[inside]} folders={[folder]} activeFileId={null} activeFolderId={null}
+        onSelectFile={vi.fn()} onSelectFolder={onSelectFolder} onRename={onRename} presence={{}} />,
+    );
+
+    it("selecting a folder leaves it open, so a new file there is visible", () => {
+      const onSelectFolder = vi.fn();
+      renderTree(onSelectFolder);
+      fireEvent.click(screen.getByText("src"));
+      expect(onSelectFolder).toHaveBeenCalledWith(folder);
+      expect(screen.getByText("a.py")).toBeInTheDocument();
+    });
+
+    it("the arrow collapses and expands without selecting; selecting opens a collapsed folder", () => {
+      const onSelectFolder = vi.fn();
+      renderTree(onSelectFolder);
+      fireEvent.click(screen.getByRole("button", { name: "Collapse src" }));
+      expect(screen.queryByText("a.py")).not.toBeInTheDocument();
+      expect(onSelectFolder).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Expand src" }));
+      expect(screen.getByText("a.py")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Collapse src" }));
+      fireEvent.click(screen.getByText("src"));
+      expect(screen.getByText("a.py")).toBeInTheDocument();
+    });
+
+    it("double-clicking the arrow does not start a rename", () => {
+      const onRename = vi.fn();
+      renderTree(vi.fn(), onRename);
+      fireEvent.doubleClick(screen.getByRole("button", { name: "Collapse src" }));
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    it("keeps a file visible at the root when its folder is gone", () => {
+      render(<FileTree files={[inside]} folders={[]} activeFileId={null} activeFolderId={null}
+        onSelectFile={vi.fn()} onSelectFolder={vi.fn()} onRename={vi.fn()} presence={{}} />);
+      expect(screen.getByText("a.py")).toBeInTheDocument();
+    });
+
+    it("gives long names a tooltip, since they are cut off", () => {
+      renderTree();
+      expect(screen.getByText("a.py")).toHaveAttribute("title", "src/a.py");
+    });
+  });
+
   it("shows who else is in a file, by name", () => {
     const f = file({ id: 1, path: "main.py", folder_id: null });
 
