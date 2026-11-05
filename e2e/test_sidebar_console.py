@@ -120,10 +120,10 @@ def test_a_member_with_the_owner_role_can_add_the_api_key(open_as, api):
     projects = api.call("GET", "/projects")
     pid = next((p["id"] for p in projects if p["name"] == "e2e co-owner"), None) \
         or api.call("POST", "/projects", body={"name": "e2e co-owner"})["id"]
-    if not api.call("GET", f"/projects/{pid}/files"):
-        api.call("POST", f"/projects/{pid}/files", body={"path": "e2e_co_owner.py"})
-        api.call("POST", f"/projects/{pid}/members", body={"user_id": "bob", "role": "owner"})
-        api.call("POST", f"/projects/{pid}/members", body={"user_id": "carol", "role": "editor"})
+    members = {m["user"]["username"] for m in api.call("GET", f"/projects/{pid}/members")}
+    for user, role in (("bob", "owner"), ("carol", "editor")):
+        if user not in members:
+            api.call("POST", f"/projects/{pid}/members", body={"user_id": user, "role": role})
 
     bob, carol = open_as("bob"), open_as("carol")
     for page in (bob, carol):
