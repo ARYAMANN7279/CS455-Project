@@ -81,7 +81,10 @@ function TreeItem({
   visited: Set<number>;
 }) {
   const childFolders = (folders || []).filter(f => f.parent_folder_id === parentId);
-  const childFiles = (files || []).filter(f => f.folder_id === parentId);
+  const existingIds = new Set(folders.map(f => f.id));
+  // Files whose folder is gone stay visible at the root, like orphan folders below.
+  const childFiles = (files || []).filter(f =>
+    f.folder_id === parentId || (parentId === null && !existingIds.has(f.folder_id as number)));
   const modified = useContext(ModifiedContext);
   const { names, me } = useContext(PeopleContext);
 
@@ -89,12 +92,6 @@ function TreeItem({
   // and render them here so they don't disappear.
   let orphanFolders: FolderMeta[] = [];
   if (parentId === null) {
-    const allParentIds = new Set(folders.map(f => f.parent_folder_id).filter(Boolean));
-    orphanFolders = folders.filter(f => f.parent_folder_id !== null && !allParentIds.has(f.parent_folder_id));
-    // This is a bit simplistic; it doesn't check if the parent is actually missing from the DB,
-    // but it prevents folders from disappearing if their parent is missing from the current list.
-    // Actually, a better way is to check if the parent_folder_id is not present in the folders list.
-    const existingIds = new Set(folders.map(f => f.id));
     orphanFolders = folders.filter(f => f.parent_folder_id !== null && !existingIds.has(f.parent_folder_id));
   }
 
@@ -147,12 +144,11 @@ function TreeItem({
               gap: 4,
               padding: "2px 4px",
               borderRadius: 3,
-              backgroundColor: file.id === activeFileId ? "rgba(88,166,255,0.2)" : "transparent",
               color: "var(--fg)"
             }}
           >
-            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              {file.path ? file.path.split("/").pop() : "untitled"}
+            <span style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+              <span className="tree-name" title={file.path}>{file.path ? file.path.split("/").pop() : "untitled"}</span>
               {modified[file.id] && (
                 <span className="modified-dot" title={`Changed by ${modified[file.id]} since you last opened it`} aria-label="modified">●</span>
               )}
@@ -205,14 +201,23 @@ function FolderItem({
       <div
         className={`folder-header ${folder.id === activeFolderId ? "active" : ""}`}
         onClick={() => {
-          setIsOpen(!isOpen);
+          // Selecting is how you choose where new files go, so it must not hide the folder.
+          setIsOpen(true);
           onSelectFolder(folder);
         }}
         onDoubleClick={() => onRename("folder", folder)}
         style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
       >
-        <span>{isOpen ? "▼" : "▶"}</span>
-        <span className="folder-name">{folder.name}</span>
+        <button
+          className="folder-toggle"
+          aria-label={`${isOpen ? "Collapse" : "Expand"} ${folder.name}`}
+          aria-expanded={isOpen}
+          onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          {isOpen ? "▼" : "▶"}
+        </button>
+        <span className="folder-name tree-name" title={folder.name}>{folder.name}</span>
       </div>
       {isOpen && (
         <div className="folder-children" style={{ paddingLeft: 16 }}>

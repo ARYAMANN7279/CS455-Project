@@ -64,6 +64,60 @@ async def test_non_owner_cannot_configure_assistant(client, project):
 
 
 @pytest.mark.asyncio
+async def test_member_with_owner_role_can_configure_assistant(client, project):
+    """The Owner role is enough: it need not be the user who created the project."""
+    a, b = project["owner"], project["other"]
+    project_id = project["id"]
+
+    r = await client.post(
+        f"/projects/{project_id}/members",
+        json={"user_id": b["id"], "role": "owner"},
+        headers={"Authorization": f"Bearer {a['token']}"},
+    )
+    assert r.status_code == 201
+
+    headers = {"Authorization": f"Bearer {b['token']}"}
+    r = await client.post(
+        f"/projects/{project_id}/assist/config",
+        json={"provider": "mistral", "api_key": "sk-test-1234567890"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+    r = await client.patch(
+        f"/projects/{project_id}/assist/config",
+        json={"api_key": "sk-test-0987654321"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_non_owner_cannot_update_assistant_config(client, project):
+    a, b = project["owner"], project["other"]
+    project_id = project["id"]
+    owner = {"Authorization": f"Bearer {a['token']}"}
+
+    r = await client.post(
+        f"/projects/{project_id}/members", json={"user_id": b["id"], "role": "debugger"}, headers=owner
+    )
+    assert r.status_code == 201
+    r = await client.post(
+        f"/projects/{project_id}/assist/config",
+        json={"provider": "mistral", "api_key": "sk-test-1234567890"},
+        headers=owner,
+    )
+    assert r.status_code == 200, r.text
+
+    r = await client.patch(
+        f"/projects/{project_id}/assist/config",
+        json={"api_key": "sk-test-0987654321"},
+        headers={"Authorization": f"Bearer {b['token']}"},
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_get_and_update_config_round_trip(client, project):
     a = project["owner"]
     project_id = project["id"]
