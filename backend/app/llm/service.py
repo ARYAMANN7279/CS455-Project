@@ -125,6 +125,7 @@ async def log_request(
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     error: str | None = None,
+    steps: list[dict[str, str | bool]] | None = None,
 ) -> AIAssistantRequest:
     row = AIAssistantRequest(
         project_id=project_id,
@@ -133,6 +134,7 @@ async def log_request(
         mode=mode,
         prompt=prompt,
         response=response,
+        steps=steps if steps is not None else [],
         provider=resolved.kind,
         model_used=resolved.model,
         prompt_tokens=prompt_tokens,

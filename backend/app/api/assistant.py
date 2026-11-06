@@ -287,7 +287,10 @@ async def request_assistant(
         "file_id": payload.file_id,
     })
 
+    completed_steps: list[Step] = []
+
     async def on_step(step: Step) -> None:
+        completed_steps.append(step)
         _broadcast_ai(project_id, {
             "op": "AI_STEP",
             "request_id": request_id,
@@ -349,6 +352,7 @@ async def request_assistant(
                 resolved=resolved,
                 latency_ms=0,
                 error=str(e),
+                steps=[asdict(step) for step in completed_steps],
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -367,6 +371,7 @@ async def request_assistant(
             latency_ms=result.latency_ms,
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
+            steps=[asdict(step) for step in result.steps],
         )
 
         proposal = None
