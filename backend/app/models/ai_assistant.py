@@ -6,7 +6,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -80,6 +80,9 @@ class AIAssistantRequest(Base):
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     # The AI's response
     response: Mapped[str] = mapped_column(Text, nullable=False)
+    steps: Mapped[list[dict[str, str | bool]] | None] = mapped_column(
+        JSON, nullable=True, default=list
+    )
     # Which provider was used
     provider: Mapped[AIProvider] = mapped_column(
         _provider_enum, nullable=False

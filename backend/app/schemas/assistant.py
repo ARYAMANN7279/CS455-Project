@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.ai_assistant import AIProvider
 
@@ -78,6 +78,13 @@ class AIAssistantRequestCreate(AIAssistantRequestBase):
     )
 
 
+class AIAgentStep(BaseModel):
+    """One tool call the agent made while answering."""
+    tool: str
+    summary: str
+    ok: bool
+
+
 class AIAssistantRequestOut(BaseModel):
     """AI assistant request/response log."""
     model_config = ConfigDict(from_attributes=True)
@@ -98,6 +105,12 @@ class AIAssistantRequestOut(BaseModel):
     is_successful: bool
     error_message: str | None
     created_at: datetime
+    steps: list[AIAgentStep] = Field(default_factory=list)
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _empty_steps_for_older_requests(cls, value: object) -> object:
+        return [] if value is None else value
 
 
 class AIDiffProposal(BaseModel):
@@ -107,13 +120,6 @@ class AIDiffProposal(BaseModel):
     proposed_text: str
     explanation: str | None = None
     syntax_ok: bool = True
-
-
-class AIAgentStep(BaseModel):
-    """One tool call the agent made while answering."""
-    tool: str
-    summary: str
-    ok: bool
 
 
 class AIAssistantStatus(BaseModel):
