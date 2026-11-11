@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -27,7 +28,8 @@ class MistralAdapter(LLMProvider):
 
     def __init__(self, api_key: str, **kwargs):
         super().__init__(api_key, **kwargs)
-        self.base_url = "https://api.mistral.ai/v1"
+        # Any OpenAI-compatible endpoint works (Gemini, Groq, ...); defaults to Mistral.
+        self.base_url = (os.getenv("LLM_BASE_URL") or "https://api.mistral.ai/v1").rstrip("/")
         self.model = kwargs.get("model") or self.DEFAULT_MODEL
 
     def _headers(self) -> dict[str, str]:
